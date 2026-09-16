@@ -26,6 +26,7 @@ jobs:
 
           if [ ! -f "$SOURCE_ZIP" ]; then
             echo "ERRO: $SOURCE_ZIP não encontrado."
+            echo "Arquivos disponíveis:"
             ls -lah
             exit 1
           fi
@@ -40,35 +41,64 @@ jobs:
 
           if [ -z "$PROJECT" ]; then
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
-            find source -maxdepth 5 -print
+            find "$GITHUB_WORKSPACE/source" -maxdepth 6 -print
             exit 1
           fi
 
-          SOURCE_ROOT="$(dirname "$PROJECT")"
+          PATCHES_DIR="$(find "$GITHUB_WORKSPACE/source" \
+            -type d \
+            -path '*/ThreeOneOSFive/Patches' \
+            -print -quit)"
+
+          if [ -z "$PATCHES_DIR" ]; then
+            echo "ERRO: pasta ThreeOneOSFive/Patches não encontrada."
+            echo "Pastas Patches encontradas:"
+            find "$GITHUB_WORKSPACE/source" \
+              -type d \
+              -name 'Patches' \
+              -print || true
+            exit 1
+          fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
 
-          echo "Projeto: $PROJECT"
-          echo "Source root: $SOURCE_ROOT"
+          echo "========================================"
+          echo "PROJETO"
+          echo "$PROJECT"
+          echo
+          echo "PASTA DE PATCHES"
+          echo "$PATCHES_DIR"
+          echo "========================================"
 
           echo
-          echo "Patches encontrados na source:"
+          echo "Arquivos .3105 encontrados:"
 
-          if [ -d "$SOURCE_ROOT/Patches" ]; then
-            find "$SOURCE_ROOT/Patches" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.3105' \
-              -print
-          else
-            echo "AVISO: pasta Patches ainda não existe."
+          find "$PATCHES_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            -print
+
+          PATCH_COUNT="$(find "$PATCHES_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            | wc -l | tr -d ' ')"
+
+          echo
+          echo "Total de patches: $PATCH_COUNT"
+
+          if [ "$PATCH_COUNT" -eq 0 ]; then
+            echo "ERRO: a pasta Patches existe, mas não contém nenhum .3105."
+            exit 1
           fi
 
       - name: Show Xcode version
         shell: bash
         run: |
           set -euo pipefail
+
           xcodebuild -version
           xcodebuild -showsdks
 
@@ -104,7 +134,11 @@ jobs:
 
           set -e
 
+          echo
+          echo "xcodebuild exit code: $BUILD_EXIT"
+
           if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo
             echo "BUILD FALHOU."
 
             grep -n -E \
@@ -115,6 +149,7 @@ jobs:
             exit "$BUILD_EXIT"
           fi
 
+          echo
           echo "BUILD CONCLUÍDO."
 
       - name: Package IPA with patches
@@ -135,26 +170,18 @@ jobs:
           echo "App encontrado:"
           echo "$APP_PATH"
 
-          PATCHES_DIR="$SOURCE_ROOT/Patches"
+          echo
+          echo "Patches serão copiados de:"
+          echo "$PATCHES_DIR"
 
-          if [ ! -d "$PATCHES_DIR" ]; then
-            echo "ERRO: pasta Patches não encontrada:"
-            echo "$PATCHES_DIR"
-            exit 1
-          fi
-
-          PATCH_COUNT="$(find "$PATCHES_DIR" \
+          SOURCE_PATCH_COUNT="$(find "$PATCHES_DIR" \
             -maxdepth 1 \
             -type f \
             -name '*.3105' \
             | wc -l | tr -d ' ')"
 
-          echo "Patches encontrados: $PATCH_COUNT"
-
-          if [ "$PATCH_COUNT" -eq 0 ]; then
-            echo "ERRO: nenhum arquivo .3105 encontrado."
-            echo "Coloque os patches em:"
-            echo "ThreeOneOSFive/Patches/"
+          if [ "$SOURCE_PATCH_COUNT" -eq 0 ]; then
+            echo "ERRO: nenhum .3105 encontrado antes do empacotamento."
             exit 1
           fi
 
@@ -165,9 +192,9 @@ jobs:
 
           cp -R "$APP_PATH" Payload/3105.app
 
-          # ==================================================
-          # COPIA OS .3105 PARA DENTRO DO APP
-          # ==================================================
+          # ================================================
+          # COLOCA OS PATCHES DENTRO DO APP
+          # ================================================
 
           mkdir -p Payload/3105.app/Patches
 
@@ -179,7 +206,7 @@ jobs:
 
           echo
           echo "========================================"
-          echo "PATCHES DENTRO DO APP"
+          echo "PATCHES COPIADOS PARA 3105.app"
           echo "========================================"
 
           find Payload/3105.app/Patches \
@@ -188,28 +215,34 @@ jobs:
             -name '*.3105' \
             -print
 
-          FINAL_PATCH_COUNT="$(find Payload/3105.app/Patches \
+          APP_PATCH_COUNT="$(find Payload/3105.app/Patches \
             -maxdepth 1 \
             -type f \
             -name '*.3105' \
             | wc -l | tr -d ' ')"
 
           echo
-          echo "Total dentro do app: $FINAL_PATCH_COUNT"
+          echo "Source: $SOURCE_PATCH_COUNT patch(es)"
+          echo "App:    $APP_PATCH_COUNT patch(es)"
 
-          if [ "$FINAL_PATCH_COUNT" -ne "$PATCH_COUNT" ]; then
-            echo "ERRO: nem todos os patches foram copiados."
+          if [ "$APP_PATCH_COUNT" -ne "$SOURCE_PATCH_COUNT" ]; then
+            echo "ERRO: quantidade de patches dentro do app não confere."
             exit 1
           fi
 
           echo
-          echo "Tamanho do app antes da IPA:"
+          echo "Tamanho do app:"
           du -sh Payload/3105.app
+
+          echo
+          echo "Tamanho da pasta Patches:"
           du -sh Payload/3105.app/Patches
 
-          # ==================================================
-          # CRIA A IPA SOMENTE DEPOIS DOS PATCHES
-          # ==================================================
+          # ================================================
+          # CRIA IPA
+          # ================================================
+
+          rm -f 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
 
           ditto \
             -c \
@@ -220,30 +253,41 @@ jobs:
             3105-EXTERNAL-UI-1.0.1-unsigned.ipa
 
           echo
-          echo "IPA criada:"
+          echo "========================================"
+          echo "IPA CRIADA"
+          echo "========================================"
+
           ls -lh 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
 
-          echo
-          echo "Verificando os .3105 dentro da IPA:"
+          # ================================================
+          # CONFIRMA OS PATCHES DENTRO DA IPA FINAL
+          # ================================================
 
-          unzip -l 3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
-            | grep '\.3105$'
+          echo
+          echo "Patches encontrados dentro da IPA:"
+
+          unzip -l \
+            3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
+            | grep '\.3105$' || true
 
           IPA_PATCH_COUNT="$(unzip -l \
             3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
             | grep -c '\.3105$' || true)"
 
           echo
-          echo "Patches encontrados NA IPA: $IPA_PATCH_COUNT"
+          echo "Source: $SOURCE_PATCH_COUNT"
+          echo "App:    $APP_PATCH_COUNT"
+          echo "IPA:    $IPA_PATCH_COUNT"
 
-          if [ "$IPA_PATCH_COUNT" -ne "$PATCH_COUNT" ]; then
-            echo "ERRO: verificação final da IPA falhou."
+          if [ "$IPA_PATCH_COUNT" -ne "$SOURCE_PATCH_COUNT" ]; then
+            echo "ERRO: patches ausentes na IPA final."
             exit 1
           fi
 
           echo
           echo "========================================"
-          echo "IPA VALIDADA COM $IPA_PATCH_COUNT PATCH(ES)"
+          echo "IPA VALIDADA"
+          echo "$IPA_PATCH_COUNT patch(es) incluído(s)"
           echo "========================================"
 
       - name: Upload IPA

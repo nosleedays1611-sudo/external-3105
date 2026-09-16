@@ -26,8 +26,6 @@ jobs:
 
           if [ ! -f "$SOURCE_ZIP" ]; then
             echo "ERRO: $SOURCE_ZIP não encontrado."
-            echo
-            echo "Arquivos disponíveis:"
             ls -lah
             exit 1
           fi
@@ -42,16 +40,30 @@ jobs:
 
           if [ -z "$PROJECT" ]; then
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
-            echo
-            echo "Conteúdo extraído:"
             find source -maxdepth 5 -print
             exit 1
           fi
 
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          SOURCE_ROOT="$(dirname "$PROJECT")"
 
-          echo "Projeto encontrado:"
-          echo "$PROJECT"
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+
+          echo "Projeto: $PROJECT"
+          echo "Source root: $SOURCE_ROOT"
+
+          echo
+          echo "Patches encontrados na source:"
+
+          if [ -d "$SOURCE_ROOT/Patches" ]; then
+            find "$SOURCE_ROOT/Patches" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              -print
+          else
+            echo "AVISO: pasta Patches ainda não existe."
+          fi
 
       - name: Show Xcode version
         shell: bash
@@ -92,16 +104,9 @@ jobs:
 
           set -e
 
-          echo
-          echo "========================================"
-          echo "xcodebuild exit code: $BUILD_EXIT"
-          echo "========================================"
-
           if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo
             echo "BUILD FALHOU."
-            echo
-            echo "Erros encontrados no log:"
+
             grep -n -E \
               "error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift" \
               "$GITHUB_WORKSPACE/xcodebuild.log" \
@@ -112,7 +117,7 @@ jobs:
 
           echo "BUILD CONCLUÍDO."
 
-      - name: Package IPA
+      - name: Package IPA with patches
         shell: bash
         run: |
           set -euo pipefail
@@ -124,18 +129,34 @@ jobs:
 
           if [ -z "$APP_PATH" ]; then
             echo "ERRO: 3105.app não encontrado."
-
-            echo
-            echo "Conteúdo da pasta build:"
-            find "$GITHUB_WORKSPACE/build" \
-              -maxdepth 5 \
-              -print || true
-
             exit 1
           fi
 
           echo "App encontrado:"
           echo "$APP_PATH"
+
+          PATCHES_DIR="$SOURCE_ROOT/Patches"
+
+          if [ ! -d "$PATCHES_DIR" ]; then
+            echo "ERRO: pasta Patches não encontrada:"
+            echo "$PATCHES_DIR"
+            exit 1
+          fi
+
+          PATCH_COUNT="$(find "$PATCHES_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            | wc -l | tr -d ' ')"
+
+          echo "Patches encontrados: $PATCH_COUNT"
+
+          if [ "$PATCH_COUNT" -eq 0 ]; then
+            echo "ERRO: nenhum arquivo .3105 encontrado."
+            echo "Coloque os patches em:"
+            echo "ThreeOneOSFive/Patches/"
+            exit 1
+          fi
 
           cd "$GITHUB_WORKSPACE"
 
@@ -143,6 +164,52 @@ jobs:
           mkdir -p Payload
 
           cp -R "$APP_PATH" Payload/3105.app
+
+          # ==================================================
+          # COPIA OS .3105 PARA DENTRO DO APP
+          # ==================================================
+
+          mkdir -p Payload/3105.app/Patches
+
+          find "$PATCHES_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            -exec cp -v {} Payload/3105.app/Patches/ \;
+
+          echo
+          echo "========================================"
+          echo "PATCHES DENTRO DO APP"
+          echo "========================================"
+
+          find Payload/3105.app/Patches \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            -print
+
+          FINAL_PATCH_COUNT="$(find Payload/3105.app/Patches \
+            -maxdepth 1 \
+            -type f \
+            -name '*.3105' \
+            | wc -l | tr -d ' ')"
+
+          echo
+          echo "Total dentro do app: $FINAL_PATCH_COUNT"
+
+          if [ "$FINAL_PATCH_COUNT" -ne "$PATCH_COUNT" ]; then
+            echo "ERRO: nem todos os patches foram copiados."
+            exit 1
+          fi
+
+          echo
+          echo "Tamanho do app antes da IPA:"
+          du -sh Payload/3105.app
+          du -sh Payload/3105.app/Patches
+
+          # ==================================================
+          # CRIA A IPA SOMENTE DEPOIS DOS PATCHES
+          # ==================================================
 
           ditto \
             -c \
@@ -156,6 +223,29 @@ jobs:
           echo "IPA criada:"
           ls -lh 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
 
+          echo
+          echo "Verificando os .3105 dentro da IPA:"
+
+          unzip -l 3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
+            | grep '\.3105$'
+
+          IPA_PATCH_COUNT="$(unzip -l \
+            3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
+            | grep -c '\.3105$' || true)"
+
+          echo
+          echo "Patches encontrados NA IPA: $IPA_PATCH_COUNT"
+
+          if [ "$IPA_PATCH_COUNT" -ne "$PATCH_COUNT" ]; then
+            echo "ERRO: verificação final da IPA falhou."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "IPA VALIDADA COM $IPA_PATCH_COUNT PATCH(ES)"
+          echo "========================================"
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
@@ -163,8 +253,8 @@ jobs:
           path: 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
           if-no-files-found: error
 
-      - name: Upload complete build log
-        if: always()
+      - name: Upload build log on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-1.0.1-log

@@ -1,0 +1,79 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract source ZIP
+        run: |
+          set -e
+          rm -rf source
+          mkdir source
+          unzip -q "new 3105.zip" -d source
+          test -d "source/3105-1.0.0-beta.3"
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build app without signing
+        run: |
+          set -o pipefail
+          cd "source/3105-1.0.0-beta.3"
+          xcodebuild \
+            -project ThreeOneOSFive.xcodeproj \
+            -target 3105 \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            SYMROOT="$PWD/build" \
+            OBJROOT="$PWD/build/obj" \
+            clean build | tee "$GITHUB_WORKSPACE/xcodebuild.log"
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          SRC="$GITHUB_WORKSPACE/source/3105-1.0.0-beta.3"
+          APP_PATH="$(find "$SRC/build" -type d -name '3105.app' -print -quit)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "3105.app was not found after the build."
+            exit 1
+          fi
+
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf Payload
+          rm -f 3105-unsigned.ipa
+
+          mkdir Payload
+
+          cp -R "$APP_PATH" Payload/3105.app
+
+          ditto -c -k --sequesterRsrc --keepParent Payload 3105-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3105-unsigned-ipa
+          path: 3105-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log if build fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          if-no-files-found: ignore

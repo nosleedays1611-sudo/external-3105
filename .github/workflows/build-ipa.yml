@@ -3,7 +3,8 @@ name: Build unsigned IPA
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build:
@@ -14,60 +15,100 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract source ZIP
+      - name: Extract source
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           rm -rf source
           mkdir source
-          unzip -q "new 3105.zip" -d source
-          test -d "source/3105-1.0.0-beta.3"
+
+          unzip -q "3105-1.0.0-EXTERNAL-UI-source.zip" -d source
+
+          PROJECT="$(find source -type d -name 'ThreeOneOSFive.xcodeproj' -print -quit)"
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERRO: ThreeOneOSFive.xcodeproj nao encontrado."
+            find source -maxdepth 4 -print
+            exit 1
+          fi
+
+          SRC="$(dirname "$PROJECT")"
+
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+          echo "Projeto encontrado:"
+          echo "$PROJECT"
 
       - name: Show Xcode version
         run: xcodebuild -version
 
       - name: Build app without signing
+        shell: bash
         run: |
           set -o pipefail
-          cd "source/3105-1.0.0-beta.3"
+
           xcodebuild \
-            -project ThreeOneOSFive.xcodeproj \
+            -project "$PROJECT" \
             -target 3105 \
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            SYMROOT="$PWD/build" \
-            OBJROOT="$PWD/build/obj" \
+            SYMROOT="$GITHUB_WORKSPACE/build" \
+            OBJROOT="$GITHUB_WORKSPACE/build/obj" \
             clean build | tee "$GITHUB_WORKSPACE/xcodebuild.log"
 
-      - name: Package unsigned IPA
+      - name: Find built app
+        shell: bash
         run: |
-          set -e
-          SRC="$GITHUB_WORKSPACE/source/3105-1.0.0-beta.3"
-          APP_PATH="$(find "$SRC/build" -type d -name '3105.app' -print -quit)"
+          set -euo pipefail
+
+          APP_PATH="$(find "$GITHUB_WORKSPACE/build" -type d -name '3105.app' -print -quit)"
 
           if [ -z "$APP_PATH" ]; then
-            echo "3105.app was not found after the build."
+            echo "ERRO: 3105.app nao encontrado."
+            find "$GITHUB_WORKSPACE/build" -maxdepth 6 -print || true
             exit 1
           fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "App encontrado:"
+          echo "$APP_PATH"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
 
           cd "$GITHUB_WORKSPACE"
 
           rm -rf Payload
-          rm -f 3105-unsigned.ipa
+          rm -f 3105-EXTERNAL-UI-unsigned.ipa
 
           mkdir Payload
-
           cp -R "$APP_PATH" Payload/3105.app
 
-          ditto -c -k --sequesterRsrc --keepParent Payload 3105-unsigned.ipa
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            3105-EXTERNAL-UI-unsigned.ipa
+
+          test -s 3105-EXTERNAL-UI-unsigned.ipa
+
+          echo "IPA criada:"
+          ls -lh 3105-EXTERNAL-UI-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: 3105-unsigned-ipa
-          path: 3105-unsigned.ipa
+          name: 3105-EXTERNAL-UI-unsigned-ipa
+          path: 3105-EXTERNAL-UI-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload build log if build fails

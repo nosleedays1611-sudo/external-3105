@@ -36,6 +36,7 @@ jobs:
 
             if unzip -Z1 "$ZIP" 2>/dev/null \
               | grep -qE '(^|/)ThreeOneOSFive\.xcodeproj/project\.pbxproj$'; then
+
               SOURCE_ZIP="$ZIP"
               break
             fi
@@ -60,6 +61,7 @@ jobs:
             echo
             echo "Nenhum ZIP com projeto encontrado."
             echo "Procurando projeto já extraído..."
+
             SEARCH_ROOT="$GITHUB_WORKSPACE"
           fi
 
@@ -72,16 +74,29 @@ jobs:
           if [ -z "$PROJECT" ]; then
             echo
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -print | head -n 400
+            echo
+            echo "Arquivos encontrados:"
+
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 5 \
+              -print \
+              | head -n 400
+
             exit 1
           fi
 
           ROOT="$(dirname "$PROJECT")"
+
           PATCHES_DIR="$ROOT/ThreeOneOSFive/Patches"
-          VAULT="$ROOT/ThreeOneOSFive/Generated/patchvault.bin"
-          RESOURCE_VAULT="$ROOT/ThreeOneOSFive/Generated/resourcevault.bin"
+          GENERATED_DIR="$ROOT/ThreeOneOSFive/Generated"
+
+          VAULT="$GENERATED_DIR/patchvault.bin"
+          RESOURCE_VAULT="$GENERATED_DIR/resourcevault.bin"
+
           PATCH_BRIDGE="$ROOT/ThreeOneOSFive/helpers/PatchVaultBridge.generated.c"
+
           AUTH="$ROOT/ThreeOneOSFive/Auth/CanvaCore.dylib"
+
           VAULT_GENERATOR="$ROOT/tools/build_patch_vault.py"
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
@@ -96,11 +111,25 @@ jobs:
           echo "========================================"
           echo "PROJETO ENCONTRADO"
           echo "========================================"
+
           echo "$PROJECT"
-          echo "ROOT: $ROOT"
+
+          echo
+          echo "ROOT:"
+          echo "$ROOT"
+
+          echo
+          echo "PATCHES:"
+          echo "$PATCHES_DIR"
 
           mkdir -p "$PATCHES_DIR"
-          mkdir -p "$ROOT/ThreeOneOSFive/Generated"
+          mkdir -p "$GENERATED_DIR"
+          mkdir -p "$(dirname "$PATCH_BRIDGE")"
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO ARQUIVOS BASE"
+          echo "========================================"
 
           if [ ! -s "$RESOURCE_VAULT" ]; then
             echo "ERRO: resourcevault.bin não encontrado."
@@ -113,27 +142,44 @@ jobs:
           fi
 
           if [ ! -f "$VAULT_GENERATOR" ]; then
-            echo "ERRO: tools/build_patch_vault.py não encontrado."
+            echo "ERRO: build_patch_vault.py não encontrado:"
+            echo "$VAULT_GENERATOR"
             exit 1
           fi
 
+          echo "resourcevault.bin:"
+          ls -lh "$RESOURCE_VAULT"
+
+          echo
+          echo "CanvaCore.dylib:"
+          ls -lh "$AUTH"
+
+          echo
+          echo "Gerador:"
+          ls -lh "$VAULT_GENERATOR"
+
           echo
           echo "========================================"
-          echo "NORMALIZANDO NOMES .3105"
+          echo "NORMALIZANDO NOMES"
           echo "========================================"
 
           while IFS= read -r -d '' FILE; do
             DEST="${FILE%.3105}"
 
             if [ -e "$DEST" ]; then
-              echo "ERRO: não posso renomear porque já existe: $DEST"
+              echo
+              echo "ERRO: já existe o destino:"
+              echo "$DEST"
               exit 1
             fi
 
             echo "Renomeando:"
-            echo "  $FILE"
-            echo "  -> $DEST"
+            echo "$FILE"
+            echo "->"
+            echo "$DEST"
+
             mv "$FILE" "$DEST"
+
           done < <(
             find "$PATCHES_DIR" \
               -maxdepth 1 \
@@ -152,10 +198,14 @@ jobs:
           )"
 
           echo
-          echo ".3105 encontrados para integração: $PATCH_COUNT"
+          echo "========================================"
+          echo "PATCHES ENCONTRADOS"
+          echo "========================================"
+
+          echo "Quantidade: $PATCH_COUNT"
 
           if [ "$PATCH_COUNT" -gt 0 ]; then
-            echo
+
             find "$PATCHES_DIR" \
               -maxdepth 1 \
               -type f \
@@ -164,15 +214,51 @@ jobs:
 
             echo
             echo "========================================"
+            echo "PREPARANDO PYTHON"
+            echo "========================================"
+
+            PYTHON_VENV="$RUNNER_TEMP/patchvault-venv"
+
+            rm -rf "$PYTHON_VENV"
+
+            echo "Criando ambiente virtual..."
+
+            python3 -m venv "$PYTHON_VENV"
+
+            echo
+            echo "Python utilizado:"
+
+            "$PYTHON_VENV/bin/python" --version
+
+            echo
+            echo "Atualizando pip..."
+
+            "$PYTHON_VENV/bin/python" \
+              -m pip install \
+              --upgrade pip
+
+            echo
+            echo "Instalando cryptography..."
+
+            "$PYTHON_VENV/bin/python" \
+              -m pip install \
+              cryptography
+
+            echo
+            echo "========================================"
             echo "GERANDO PATCH VAULT"
             echo "========================================"
 
-            python3 -m pip install -q cryptography
-
-            python3 "$VAULT_GENERATOR" \
+            "$PYTHON_VENV/bin/python" \
+              "$VAULT_GENERATOR" \
               --input "$PATCHES_DIR" \
               --vault "$VAULT" \
               --bridge "$PATCH_BRIDGE"
+
+            echo
+            echo "========================================"
+            echo "VALIDANDO VAULT GERADO"
+            echo "========================================"
 
             if [ ! -s "$VAULT" ]; then
               echo "ERRO: patchvault.bin não foi gerado."
@@ -184,40 +270,44 @@ jobs:
               exit 1
             fi
 
-            echo
-            echo "Vault gerado:"
+            echo "Patch vault:"
             ls -lh "$VAULT"
 
             echo
-            echo "Bridge gerado:"
+            echo "Bridge:"
             ls -lh "$PATCH_BRIDGE"
 
             echo
-            echo "Removendo .3105 crus somente após gerar o vault..."
+            echo "========================================"
+            echo "REMOVENDO PATCHES CRUS"
+            echo "========================================"
 
             find "$PATCHES_DIR" \
               -maxdepth 1 \
               -type f \
               -name '*.3105' \
               -delete
+
           else
+
+            echo
             echo "Nenhum .3105 novo encontrado."
-            echo "Usando patchvault.bin existente."
+            echo "Usando vault existente."
 
             if [ ! -s "$VAULT" ]; then
-              echo "ERRO: patchvault.bin não encontrado."
+              echo "ERRO: patchvault.bin não existe."
               exit 1
             fi
 
             if [ ! -s "$PATCH_BRIDGE" ]; then
-              echo "ERRO: PatchVaultBridge.generated.c não encontrado."
+              echo "ERRO: PatchVaultBridge.generated.c não existe."
               exit 1
             fi
           fi
 
           echo
           echo "========================================"
-          echo "VALIDANDO SOURCE"
+          echo "VALIDANDO SOURCE FINAL"
           echo "========================================"
 
           RAW_PATCH_COUNT="$(
@@ -231,8 +321,30 @@ jobs:
           echo ".3105 crus restantes: $RAW_PATCH_COUNT"
 
           if [ "$RAW_PATCH_COUNT" -ne 0 ]; then
-            echo "ERRO: ainda existem .3105 crus depois da integração."
-            find "$ROOT/ThreeOneOSFive" -type f -name '*.3105' -print
+
+            echo
+            echo "ERRO: ainda existem arquivos .3105 crus."
+
+            find "$ROOT/ThreeOneOSFive" \
+              -type f \
+              -name '*.3105' \
+              -print
+
+            exit 1
+          fi
+
+          if [ ! -s "$VAULT" ]; then
+            echo "ERRO: patchvault.bin ausente."
+            exit 1
+          fi
+
+          if [ ! -s "$RESOURCE_VAULT" ]; then
+            echo "ERRO: resourcevault.bin ausente."
+            exit 1
+          fi
+
+          if [ ! -s "$AUTH" ]; then
+            echo "ERRO: CanvaCore.dylib ausente."
             exit 1
           fi
 
@@ -249,12 +361,15 @@ jobs:
           ls -lh "$AUTH"
 
           echo
-          echo "SOURCE PREPARADA COM SUCESSO."
+          echo "========================================"
+          echo "SOURCE PREPARADA COM SUCESSO"
+          echo "========================================"
 
       - name: Show Xcode version
         shell: bash
         run: |
           set -euo pipefail
+
           xcodebuild -version
           xcodebuild -showsdks
 
@@ -269,6 +384,7 @@ jobs:
           echo "========================================"
           echo "BUILD MAX HARDENED"
           echo "========================================"
+
           echo "$PROJECT"
 
           set +e
@@ -287,12 +403,14 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/xcodebuild.log"
 
           RC=${PIPESTATUS[0]}
+
           set -e
 
           echo
           echo "xcodebuild exit code: $RC"
 
           if [ "$RC" -ne 0 ]; then
+
             echo
             echo "========================================"
             echo "BUILD FALHOU"
@@ -307,7 +425,9 @@ jobs:
           fi
 
           echo
-          echo "BUILD CONCLUÍDO."
+          echo "========================================"
+          echo "BUILD CONCLUÍDO"
+          echo "========================================"
 
       - name: Harden and package IPA
         shell: bash
@@ -335,6 +455,7 @@ jobs:
           echo "========================================"
           echo "APP ENCONTRADO"
           echo "========================================"
+
           echo "$APP"
 
           echo
@@ -346,14 +467,18 @@ jobs:
           echo "VALIDANDO VAULTS NO MACH-O"
           echo "========================================"
 
-          if ! otool -l "$EXE" | grep -q 'sectname __pv3105'; then
+          if ! otool -l "$EXE" \
+            | grep -q 'sectname __pv3105'; then
+
             echo "ERRO: __pv3105 não encontrado."
             exit 1
           fi
 
           echo "__pv3105 OK"
 
-          if ! otool -l "$EXE" | grep -q 'sectname __rv3105'; then
+          if ! otool -l "$EXE" \
+            | grep -q 'sectname __rv3105'; then
+
             echo "ERRO: __rv3105 não encontrado."
             exit 1
           fi
@@ -362,10 +487,12 @@ jobs:
 
           echo
           echo "Removendo símbolos locais/debug..."
+
           strip -S -x "$EXE" || true
 
           echo
           echo "Removendo recursos desnecessários..."
+
           rm -rf "$APP/Patches"
           rm -f "$APP/PkgInfo"
 
@@ -383,11 +510,18 @@ jobs:
               | tr -d ' '
           )"
 
+          echo
           echo ".3105 crus no app: $RAW_APP"
 
           if [ "$RAW_APP" -ne 0 ]; then
+
             echo "ERRO: .3105 cru encontrado no app."
-            find "$APP" -type f -name '*.3105' -print
+
+            find "$APP" \
+              -type f \
+              -name '*.3105' \
+              -print
+
             exit 1
           fi
 
@@ -415,9 +549,11 @@ jobs:
 
           rm -rf Payload
           mkdir -p Payload
+
           cp -R "$APP" Payload/3105.app
 
           IPA="3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa"
+
           rm -f "$IPA"
 
           ditto \
@@ -433,7 +569,16 @@ jobs:
           echo "VALIDANDO IPA FINAL"
           echo "========================================"
 
-          RAW_IPA="$(unzip -l "$IPA" | grep -c '\.3105$' || true)"
+          if [ ! -s "$IPA" ]; then
+            echo "ERRO: IPA não foi criada."
+            exit 1
+          fi
+
+          RAW_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c '\.3105$' || true
+          )"
+
           echo ".3105 crus na IPA: $RAW_IPA"
 
           if [ "$RAW_IPA" -ne 0 ]; then
@@ -441,7 +586,11 @@ jobs:
             exit 1
           fi
 
-          LPROJ_IPA="$(unzip -l "$IPA" | grep -c '\.lproj/' || true)"
+          LPROJ_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c '\.lproj/' || true
+          )"
+
           echo ".lproj na IPA: $LPROJ_IPA"
 
           if [ "$LPROJ_IPA" -ne 0 ]; then
@@ -452,7 +601,7 @@ jobs:
           echo
           echo "========================================"
           echo "IPA MAX HARDENED CRIADA"
-          echo "========================================"
+          echo "============dnjdjsjss============================"
 
           ls -lh "$IPA"
 

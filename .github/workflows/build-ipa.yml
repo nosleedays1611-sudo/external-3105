@@ -3,7 +3,8 @@ name: Build unsigned IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   build:
@@ -14,93 +15,165 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract source 1.0.1
+      - name: Extract protected source
         shell: bash
         run: |
           set -euo pipefail
 
-          SOURCE_ZIP="3105-1.0.1-EXTERNAL-UI-source.zip"
+          rm -rf "$GITHUB_WORKSPACE/source"
+          rm -rf "$GITHUB_WORKSPACE/build"
+          rm -rf "$GITHUB_WORKSPACE/Payload"
 
-          rm -rf source build Payload
-          mkdir -p source
+          mkdir -p "$GITHUB_WORKSPACE/source"
 
-          if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERRO: $SOURCE_ZIP não encontrado."
-            echo "Arquivos disponíveis:"
-            ls -lah
-            exit 1
+          SOURCE_ZIP=""
+
+          for CANDIDATE in \
+            "3105-1.0.1-PROTECTED-source.zip" \
+            "3105-1.0.1-EXTERNAL-UI-source.zip"
+          do
+            if [ -f "$GITHUB_WORKSPACE/$CANDIDATE" ]; then
+              SOURCE_ZIP="$GITHUB_WORKSPACE/$CANDIDATE"
+              break
+            fi
+          done
+
+          if [ -n "$SOURCE_ZIP" ]; then
+            echo "========================================"
+            echo "EXTRAINDO SOURCE"
+            echo "$SOURCE_ZIP"
+            echo "========================================"
+
+            unzip -q "$SOURCE_ZIP" \
+              -d "$GITHUB_WORKSPACE/source"
+
+            SEARCH_ROOT="$GITHUB_WORKSPACE/source"
+          else
+            echo "ZIP não encontrado."
+            echo "Procurando projeto já extraído no repositório."
+            SEARCH_ROOT="$GITHUB_WORKSPACE"
           fi
 
-          echo "Extraindo: $SOURCE_ZIP"
-          unzip -q "$SOURCE_ZIP" -d source
-
-          PROJECT="$(find "$GITHUB_WORKSPACE/source" \
+          PROJECT="$(find "$SEARCH_ROOT" \
             -type d \
             -name 'ThreeOneOSFive.xcodeproj' \
             -print -quit)"
 
           if [ -z "$PROJECT" ]; then
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
-            find "$GITHUB_WORKSPACE/source" -maxdepth 6 -print
+            find "$SEARCH_ROOT" -maxdepth 5 -print
             exit 1
           fi
 
-          PATCHES_DIR="$(find "$GITHUB_WORKSPACE/source" \
-            -type d \
-            -path '*/ThreeOneOSFive/Patches' \
-            -print -quit)"
+          SOURCE_ROOT="$(dirname "$PROJECT")"
 
-          if [ -z "$PATCHES_DIR" ]; then
-            echo "ERRO: pasta ThreeOneOSFive/Patches não encontrada."
-            echo "Pastas Patches encontradas:"
-            find "$GITHUB_WORKSPACE/source" \
-              -type d \
-              -name 'Patches' \
-              -print || true
-            exit 1
-          fi
+          VAULT="$SOURCE_ROOT/ThreeOneOSFive/Generated/patchvault.bin"
+          BRIDGE="$SOURCE_ROOT/ThreeOneOSFive/helpers/PatchVaultBridge.generated.c"
+          PATCHES_DIR="$SOURCE_ROOT/ThreeOneOSFive/Patches"
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "VAULT=$VAULT" >> "$GITHUB_ENV"
+          echo "BRIDGE=$BRIDGE" >> "$GITHUB_ENV"
           echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
 
+          echo
           echo "========================================"
-          echo "PROJETO"
+          echo "PROJETO PROTEGIDO"
+          echo "========================================"
+          echo "Projeto:"
           echo "$PROJECT"
           echo
-          echo "PASTA DE PATCHES"
-          echo "$PATCHES_DIR"
-          echo "========================================"
-
+          echo "Source root:"
+          echo "$SOURCE_ROOT"
           echo
-          echo "Arquivos .3105 encontrados:"
-
-          find "$PATCHES_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.3105' \
-            -print
-
-          PATCH_COUNT="$(find "$PATCHES_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.3105' \
-            | wc -l | tr -d ' ')"
-
+          echo "Vault:"
+          echo "$VAULT"
           echo
-          echo "Total de patches: $PATCH_COUNT"
 
-          if [ "$PATCH_COUNT" -eq 0 ]; then
-            echo "ERRO: a pasta Patches existe, mas não contém nenhum .3105."
+          if [ ! -s "$VAULT" ]; then
+            echo "ERRO: patchvault.bin não encontrado ou vazio."
             exit 1
           fi
+
+          if [ ! -s "$BRIDGE" ]; then
+            echo "ERRO: PatchVaultBridge.generated.c não encontrado."
+            exit 1
+          fi
+
+          echo "Vault encontrado:"
+          ls -lh "$VAULT"
+
+          echo
+          echo "Bridge encontrado:"
+          ls -lh "$BRIDGE"
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO AUSÊNCIA DE .3105 CRU"
+          echo "========================================"
+
+          RAW_PATCH_COUNT=0
+
+          if [ -d "$PATCHES_DIR" ]; then
+            RAW_PATCH_COUNT="$(find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              | wc -l | tr -d ' ')"
+          fi
+
+          echo "Patches .3105 crus na source: $RAW_PATCH_COUNT"
+
+          if [ "$RAW_PATCH_COUNT" -ne 0 ]; then
+            echo "ERRO: existem .3105 crus dentro da source protegida."
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              -print
+            exit 1
+          fi
+
+          echo
+          echo "Source protegida validada."
+          echo "Nenhum .3105 cru presente."
 
       - name: Show Xcode version
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "========================================"
+          echo "XCODE"
+          echo "========================================"
+
           xcodebuild -version
           xcodebuild -showsdks
+
+      - name: Validate embedded vault
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s "$VAULT" ]; then
+            echo "ERRO: patchvault.bin desapareceu."
+            exit 1
+          fi
+
+          VAULT_SIZE="$(stat -f%z "$VAULT")"
+
+          echo "========================================"
+          echo "PATCH VAULT"
+          echo "========================================"
+          echo "Tamanho: $VAULT_SIZE bytes"
+
+          if [ "$VAULT_SIZE" -lt 100 ]; then
+            echo "ERRO: patchvault.bin parece inválido."
+            exit 1
+          fi
+
+          echo "Vault pronto para ser embutido no Mach-O."
 
       - name: Build unsigned app
         shell: bash
@@ -111,9 +184,10 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/xcodebuild.log"
 
           echo "========================================"
-          echo "BUILD 3105 1.0.1"
-          echo "Projeto: $PROJECT"
+          echo "BUILD PROTECTED 3105 1.0.1"
           echo "========================================"
+          echo "Projeto:"
+          echo "$PROJECT"
 
           set +e
 
@@ -139,12 +213,14 @@ jobs:
 
           if [ "$BUILD_EXIT" -ne 0 ]; then
             echo
-            echo "BUILD FALHOU."
+            echo "========================================"
+            echo "BUILD FALHOU"
+            echo "========================================"
 
             grep -n -E \
-              "error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift" \
+              "error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift|Ld " \
               "$GITHUB_WORKSPACE/xcodebuild.log" \
-              | tail -n 150 || true
+              | tail -n 200 || true
 
             exit "$BUILD_EXIT"
           fi
@@ -152,7 +228,7 @@ jobs:
           echo
           echo "BUILD CONCLUÍDO."
 
-      - name: Package IPA with patches
+      - name: Validate protected app
         shell: bash
         run: |
           set -euo pipefail
@@ -167,23 +243,83 @@ jobs:
             exit 1
           fi
 
-          echo "App encontrado:"
+          EXECUTABLE="$APP_PATH/3105"
+
+          if [ ! -f "$EXECUTABLE" ]; then
+            echo "ERRO: executável 3105 não encontrado."
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "EXECUTABLE=$EXECUTABLE" >> "$GITHUB_ENV"
+
+          echo "========================================"
+          echo "APP GERADO"
+          echo "========================================"
           echo "$APP_PATH"
 
           echo
-          echo "Patches serão copiados de:"
-          echo "$PATCHES_DIR"
+          echo "Executável:"
+          ls -lh "$EXECUTABLE"
 
-          SOURCE_PATCH_COUNT="$(find "$PATCHES_DIR" \
-            -maxdepth 1 \
+          echo
+          echo "========================================"
+          echo "VALIDANDO __patchvault NO MACH-O"
+          echo "========================================"
+
+          if ! otool -l "$EXECUTABLE" \
+            | grep -q 'sectname __patchvault'; then
+            echo "ERRO: seção __patchvault não foi embutida no executável."
+            exit 1
+          fi
+
+          echo "__DATA,__patchvault encontrada."
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO .3105 CRUS"
+          echo "========================================"
+
+          APP_RAW_PATCHES="$(find "$APP_PATH" \
             -type f \
             -name '*.3105' \
             | wc -l | tr -d ' ')"
 
-          if [ "$SOURCE_PATCH_COUNT" -eq 0 ]; then
-            echo "ERRO: nenhum .3105 encontrado antes do empacotamento."
+          echo ".3105 crus no app: $APP_RAW_PATCHES"
+
+          if [ "$APP_RAW_PATCHES" -ne 0 ]; then
+            echo "ERRO: .3105 cru encontrado dentro do .app."
+            find "$APP_PATH" \
+              -type f \
+              -name '*.3105' \
+              -print
             exit 1
           fi
+
+          echo "Nenhum .3105 cru dentro do app."
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO AUTH"
+          echo "========================================"
+
+          AUTH_DYLIB="$(find "$APP_PATH" \
+            -type f \
+            -name 'ExternalAuth.dylib' \
+            -print -quit)"
+
+          if [ -z "$AUTH_DYLIB" ]; then
+            echo "ERRO: ExternalAuth.dylib não encontrada no app."
+            exit 1
+          fi
+
+          echo "ExternalAuth.dylib encontrada:"
+          echo "$AUTH_DYLIB"
+
+      - name: Package protected IPA
+        shell: bash
+        run: |
+          set -euo pipefail
 
           cd "$GITHUB_WORKSPACE"
 
@@ -192,57 +328,41 @@ jobs:
 
           cp -R "$APP_PATH" Payload/3105.app
 
-          # ================================================
-          # COLOCA OS PATCHES DENTRO DO APP
-          # ================================================
-
-          mkdir -p Payload/3105.app/Patches
-
-          find "$PATCHES_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.3105' \
-            -exec cp -v {} Payload/3105.app/Patches/ \;
+          # A IPA protegida NÃO deve possuir Patches/*.3105
+          rm -rf Payload/3105.app/Patches
 
           echo
           echo "========================================"
-          echo "PATCHES COPIADOS PARA 3105.app"
+          echo "VALIDAÇÃO FINAL DO PAYLOAD"
           echo "========================================"
 
-          find Payload/3105.app/Patches \
-            -maxdepth 1 \
-            -type f \
-            -name '*.3105' \
-            -print
-
-          APP_PATCH_COUNT="$(find Payload/3105.app/Patches \
-            -maxdepth 1 \
+          PAYLOAD_PATCH_COUNT="$(find Payload/3105.app \
             -type f \
             -name '*.3105' \
             | wc -l | tr -d ' ')"
 
-          echo
-          echo "Source: $SOURCE_PATCH_COUNT patch(es)"
-          echo "App:    $APP_PATCH_COUNT patch(es)"
+          echo ".3105 crus no Payload: $PAYLOAD_PATCH_COUNT"
 
-          if [ "$APP_PATCH_COUNT" -ne "$SOURCE_PATCH_COUNT" ]; then
-            echo "ERRO: quantidade de patches dentro do app não confere."
+          if [ "$PAYLOAD_PATCH_COUNT" -ne 0 ]; then
+            echo "ERRO: arquivo .3105 cru encontrado no Payload."
             exit 1
           fi
+
+          if ! otool -l Payload/3105.app/3105 \
+            | grep -q 'sectname __patchvault'; then
+            echo "ERRO: vault não encontrado no executável final."
+            exit 1
+          fi
+
+          echo "__patchvault confirmado no executável final."
 
           echo
           echo "Tamanho do app:"
           du -sh Payload/3105.app
 
-          echo
-          echo "Tamanho da pasta Patches:"
-          du -sh Payload/3105.app/Patches
+          IPA_NAME="3105-EXTERNAL-UI-1.0.1-PROTECTED-unsigned.ipa"
 
-          # ================================================
-          # CRIA IPA
-          # ================================================
-
-          rm -f 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
+          rm -f "$IPA_NAME"
 
           ditto \
             -c \
@@ -250,57 +370,48 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            3105-EXTERNAL-UI-1.0.1-unsigned.ipa
+            "$IPA_NAME"
 
           echo
           echo "========================================"
           echo "IPA CRIADA"
           echo "========================================"
 
-          ls -lh 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
-
-          # ================================================
-          # CONFIRMA OS PATCHES DENTRO DA IPA FINAL
-          # ================================================
+          ls -lh "$IPA_NAME"
 
           echo
-          echo "Patches encontrados dentro da IPA:"
+          echo "========================================"
+          echo "VALIDAÇÃO DA IPA"
+          echo "========================================"
 
-          unzip -l \
-            3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
-            | grep '\.3105$' || true
-
-          IPA_PATCH_COUNT="$(unzip -l \
-            3105-EXTERNAL-UI-1.0.1-unsigned.ipa \
+          IPA_PATCH_COUNT="$(unzip -l "$IPA_NAME" \
             | grep -c '\.3105$' || true)"
 
-          echo
-          echo "Source: $SOURCE_PATCH_COUNT"
-          echo "App:    $APP_PATCH_COUNT"
-          echo "IPA:    $IPA_PATCH_COUNT"
+          echo ".3105 crus dentro da IPA: $IPA_PATCH_COUNT"
 
-          if [ "$IPA_PATCH_COUNT" -ne "$SOURCE_PATCH_COUNT" ]; then
-            echo "ERRO: patches ausentes na IPA final."
+          if [ "$IPA_PATCH_COUNT" -ne 0 ]; then
+            echo "ERRO: a IPA contém .3105 cru."
+            unzip -l "$IPA_NAME" \
+              | grep '\.3105$' || true
             exit 1
           fi
 
           echo
-          echo "========================================"
-          echo "IPA VALIDADA"
-          echo "$IPA_PATCH_COUNT patch(es) incluído(s)"
-          echo "========================================"
+          echo "IPA protegida validada."
+          echo "Patches crus: 0"
+          echo "Vault: embutido no executável."
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: 3105-EXTERNAL-UI-1.0.1-unsigned-ipa
-          path: 3105-EXTERNAL-UI-1.0.1-unsigned.ipa
+          name: 3105-EXTERNAL-UI-1.0.1-PROTECTED-unsigned-ipa
+          path: 3105-EXTERNAL-UI-1.0.1-PROTECTED-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: xcodebuild-1.0.1-log
+          name: xcodebuild-1.0.1-protected-log
           path: xcodebuild.log
           if-no-files-found: ignore

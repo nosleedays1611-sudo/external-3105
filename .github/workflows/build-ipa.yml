@@ -36,7 +36,6 @@ jobs:
 
             if unzip -Z1 "$ZIP" 2>/dev/null \
               | grep -qE '(^|/)ThreeOneOSFive\.xcodeproj/project\.pbxproj$'; then
-
               SOURCE_ZIP="$ZIP"
               break
             fi
@@ -61,7 +60,6 @@ jobs:
             echo
             echo "Nenhum ZIP com projeto encontrado."
             echo "Procurando projeto já extraído..."
-
             SEARCH_ROOT="$GITHUB_WORKSPACE"
           fi
 
@@ -74,184 +72,35 @@ jobs:
           if [ -z "$PROJECT" ]; then
             echo
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
-            echo
-            echo "Arquivos encontrados no workspace:"
-
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 5 \
-              -print \
-              | head -n 400
-
+            find "$GITHUB_WORKSPACE" -maxdepth 5 -print | head -n 400
             exit 1
           fi
 
           ROOT="$(dirname "$PROJECT")"
-
+          PATCHES_DIR="$ROOT/ThreeOneOSFive/Patches"
           VAULT="$ROOT/ThreeOneOSFive/Generated/patchvault.bin"
           RESOURCE_VAULT="$ROOT/ThreeOneOSFive/Generated/resourcevault.bin"
+          PATCH_BRIDGE="$ROOT/ThreeOneOSFive/helpers/PatchVaultBridge.generated.c"
           AUTH="$ROOT/ThreeOneOSFive/Auth/CanvaCore.dylib"
-          PATCHES_DIR="$ROOT/ThreeOneOSFive/Patches"
+          VAULT_GENERATOR="$ROOT/tools/build_patch_vault.py"
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
           echo "VAULT=$VAULT" >> "$GITHUB_ENV"
           echo "RESOURCE_VAULT=$RESOURCE_VAULT" >> "$GITHUB_ENV"
+          echo "PATCH_BRIDGE=$PATCH_BRIDGE" >> "$GITHUB_ENV"
           echo "AUTH=$AUTH" >> "$GITHUB_ENV"
-          echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
 
           echo
           echo "========================================"
           echo "PROJETO ENCONTRADO"
           echo "========================================"
           echo "$PROJECT"
+          echo "ROOT: $ROOT"
 
-          echo
-          echo "ROOT:"
-          echo "$ROOT"
-
-          echo
-          echo "PATCHES:"
-          echo "$PATCHES_DIR"
-
-          mkdir -p "$ROOT/ThreeOneOSFive/Generated"
           mkdir -p "$PATCHES_DIR"
-
-          echo
-          echo "========================================"
-          echo "PROCURANDO PATCHES NOVOS"
-          echo "========================================"
-
-          RAW_PATCH_COUNT="$(
-            find "$PATCHES_DIR" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.3105' \
-              | wc -l \
-              | tr -d ' '
-          )"
-
-          echo ".3105 encontrados: $RAW_PATCH_COUNT"
-
-          if [ "$RAW_PATCH_COUNT" -gt 0 ]; then
-            echo
-            echo "Patches encontrados:"
-
-            find "$PATCHES_DIR" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.3105' \
-              -print
-
-            echo
-            echo "========================================"
-            echo "PROCURANDO GERADOR DO PATCH VAULT"
-            echo "========================================"
-
-            VAULT_GENERATOR=""
-
-            while IFS= read -r FILE; do
-              if grep -qE \
-                'patchvault|__pv3105' \
-                "$FILE" 2>/dev/null; then
-
-                VAULT_GENERATOR="$FILE"
-                break
-              fi
-            done < <(
-              find "$ROOT" \
-                -type f \
-                \( \
-                  -name '*.py' \
-                  -o -name '*.sh' \
-                \) \
-                -print
-            )
-
-            if [ -z "$VAULT_GENERATOR" ]; then
-              echo
-              echo "ERRO: existem patches novos, mas o gerador do patchvault não foi encontrado."
-              echo "Nenhum arquivo .3105 será removido."
-              exit 1
-            fi
-
-            echo
-            echo "Gerador encontrado:"
-            echo "$VAULT_GENERATOR"
-
-            GENERATOR_DIR="$(dirname "$VAULT_GENERATOR")"
-            GENERATOR_NAME="$(basename "$VAULT_GENERATOR")"
-
-            echo
-            echo "Executando gerador em:"
-            echo "$GENERATOR_DIR"
-
-            case "$VAULT_GENERATOR" in
-              *.py)
-                (
-                  cd "$GENERATOR_DIR"
-                  python3 "$GENERATOR_NAME"
-                )
-                ;;
-
-              *.sh)
-                (
-                  cd "$GENERATOR_DIR"
-                  chmod +x "$GENERATOR_NAME"
-                  "./$GENERATOR_NAME"
-                )
-                ;;
-
-              *)
-                echo "ERRO: gerador não suportado."
-                exit 1
-                ;;
-            esac
-
-            echo
-            echo "========================================"
-            echo "VALIDANDO PATCH VAULT GERADO"
-            echo "========================================"
-
-            if [ ! -s "$VAULT" ]; then
-              echo "ERRO: patchvault.bin não foi gerado."
-              echo "Nenhum .3105 será removido."
-              exit 1
-            fi
-
-            echo "Patch vault gerado:"
-            ls -lh "$VAULT"
-
-            echo
-            echo "Removendo .3105 somente depois da geração bem-sucedida..."
-
-            find "$PATCHES_DIR" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.3105' \
-              -delete
-
-          else
-            echo
-            echo "Nenhum patch novo encontrado."
-
-            if [ ! -s "$VAULT" ]; then
-              echo "ERRO: nenhum patch novo e patchvault.bin não existe."
-              exit 1
-            fi
-
-            echo "Usando patchvault.bin existente:"
-            ls -lh "$VAULT"
-          fi
-
-          echo
-          echo "========================================"
-          echo "VALIDANDO HARDENING"
-          echo "========================================"
-
-          if [ ! -s "$VAULT" ]; then
-            echo "ERRO: patchvault.bin não encontrado."
-            exit 1
-          fi
+          mkdir -p "$ROOT/ThreeOneOSFive/Generated"
 
           if [ ! -s "$RESOURCE_VAULT" ]; then
             echo "ERRO: resourcevault.bin não encontrado."
@@ -260,6 +109,130 @@ jobs:
 
           if [ ! -s "$AUTH" ]; then
             echo "ERRO: CanvaCore.dylib não encontrada."
+            exit 1
+          fi
+
+          if [ ! -f "$VAULT_GENERATOR" ]; then
+            echo "ERRO: tools/build_patch_vault.py não encontrado."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "NORMALIZANDO NOMES .3105"
+          echo "========================================"
+
+          while IFS= read -r -d '' FILE; do
+            DEST="${FILE%.3105}"
+
+            if [ -e "$DEST" ]; then
+              echo "ERRO: não posso renomear porque já existe: $DEST"
+              exit 1
+            fi
+
+            echo "Renomeando:"
+            echo "  $FILE"
+            echo "  -> $DEST"
+            mv "$FILE" "$DEST"
+          done < <(
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105.3105' \
+              -print0
+          )
+
+          PATCH_COUNT="$(
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo
+          echo ".3105 encontrados para integração: $PATCH_COUNT"
+
+          if [ "$PATCH_COUNT" -gt 0 ]; then
+            echo
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              -print
+
+            echo
+            echo "========================================"
+            echo "GERANDO PATCH VAULT"
+            echo "========================================"
+
+            python3 -m pip install -q cryptography
+
+            python3 "$VAULT_GENERATOR" \
+              --input "$PATCHES_DIR" \
+              --vault "$VAULT" \
+              --bridge "$PATCH_BRIDGE"
+
+            if [ ! -s "$VAULT" ]; then
+              echo "ERRO: patchvault.bin não foi gerado."
+              exit 1
+            fi
+
+            if [ ! -s "$PATCH_BRIDGE" ]; then
+              echo "ERRO: PatchVaultBridge.generated.c não foi gerado."
+              exit 1
+            fi
+
+            echo
+            echo "Vault gerado:"
+            ls -lh "$VAULT"
+
+            echo
+            echo "Bridge gerado:"
+            ls -lh "$PATCH_BRIDGE"
+
+            echo
+            echo "Removendo .3105 crus somente após gerar o vault..."
+
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              -delete
+          else
+            echo "Nenhum .3105 novo encontrado."
+            echo "Usando patchvault.bin existente."
+
+            if [ ! -s "$VAULT" ]; then
+              echo "ERRO: patchvault.bin não encontrado."
+              exit 1
+            fi
+
+            if [ ! -s "$PATCH_BRIDGE" ]; then
+              echo "ERRO: PatchVaultBridge.generated.c não encontrado."
+              exit 1
+            fi
+          fi
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO SOURCE"
+          echo "========================================"
+
+          RAW_PATCH_COUNT="$(
+            find "$ROOT/ThreeOneOSFive" \
+              -type f \
+              -name '*.3105' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo ".3105 crus restantes: $RAW_PATCH_COUNT"
+
+          if [ "$RAW_PATCH_COUNT" -ne 0 ]; then
+            echo "ERRO: ainda existem .3105 crus depois da integração."
+            find "$ROOT/ThreeOneOSFive" -type f -name '*.3105' -print
             exit 1
           fi
 
@@ -275,39 +248,13 @@ jobs:
           echo "Auth:"
           ls -lh "$AUTH"
 
-          REMAINING_PATCHES="$(
-            find "$ROOT/ThreeOneOSFive" \
-              -type f \
-              -name '*.3105' \
-              | wc -l \
-              | tr -d ' '
-          )"
-
           echo
-          echo ".3105 crus restantes: $REMAINING_PATCHES"
-
-          if [ "$REMAINING_PATCHES" -ne 0 ]; then
-            echo
-            echo "ERRO: ainda existem .3105 crus depois da integração."
-
-            find "$ROOT/ThreeOneOSFive" \
-              -type f \
-              -name '*.3105' \
-              -print
-
-            exit 1
-          fi
-
-          echo
-          echo "========================================"
-          echo "SOURCE MAX HARDENED PREPARADA"
-          echo "========================================"
+          echo "SOURCE PREPARADA COM SUCESSO."
 
       - name: Show Xcode version
         shell: bash
         run: |
           set -euo pipefail
-
           xcodebuild -version
           xcodebuild -showsdks
 
@@ -340,7 +287,6 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/xcodebuild.log"
 
           RC=${PIPESTATUS[0]}
-
           set -e
 
           echo
@@ -400,18 +346,14 @@ jobs:
           echo "VALIDANDO VAULTS NO MACH-O"
           echo "========================================"
 
-          if ! otool -l "$EXE" \
-            | grep -q 'sectname __pv3105'; then
-
+          if ! otool -l "$EXE" | grep -q 'sectname __pv3105'; then
             echo "ERRO: __pv3105 não encontrado."
             exit 1
           fi
 
           echo "__pv3105 OK"
 
-          if ! otool -l "$EXE" \
-            | grep -q 'sectname __rv3105'; then
-
+          if ! otool -l "$EXE" | grep -q 'sectname __rv3105'; then
             echo "ERRO: __rv3105 não encontrado."
             exit 1
           fi
@@ -420,12 +362,10 @@ jobs:
 
           echo
           echo "Removendo símbolos locais/debug..."
-
           strip -S -x "$EXE" || true
 
           echo
           echo "Removendo recursos desnecessários..."
-
           rm -rf "$APP/Patches"
           rm -f "$APP/PkgInfo"
 
@@ -443,17 +383,11 @@ jobs:
               | tr -d ' '
           )"
 
-          echo
           echo ".3105 crus no app: $RAW_APP"
 
           if [ "$RAW_APP" -ne 0 ]; then
             echo "ERRO: .3105 cru encontrado no app."
-
-            find "$APP" \
-              -type f \
-              -name '*.3105' \
-              -print
-
+            find "$APP" -type f -name '*.3105' -print
             exit 1
           fi
 
@@ -481,11 +415,9 @@ jobs:
 
           rm -rf Payload
           mkdir -p Payload
-
           cp -R "$APP" Payload/3105.app
 
           IPA="3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa"
-
           rm -f "$IPA"
 
           ditto \
@@ -501,11 +433,7 @@ jobs:
           echo "VALIDANDO IPA FINAL"
           echo "========================================"
 
-          RAW_IPA="$(
-            unzip -l "$IPA" \
-              | grep -c '\.3105$' || true
-          )"
-
+          RAW_IPA="$(unzip -l "$IPA" | grep -c '\.3105$' || true)"
           echo ".3105 crus na IPA: $RAW_IPA"
 
           if [ "$RAW_IPA" -ne 0 ]; then
@@ -513,23 +441,13 @@ jobs:
             exit 1
           fi
 
-          LPROJ_IPA="$(
-            unzip -l "$IPA" \
-              | grep -c '\.lproj/' || true
-          )"
-
+          LPROJ_IPA="$(unzip -l "$IPA" | grep -c '\.lproj/' || true)"
           echo ".lproj na IPA: $LPROJ_IPA"
 
           if [ "$LPROJ_IPA" -ne 0 ]; then
             echo "ERRO: .lproj encontrado na IPA."
             exit 1
           fi
-
-          echo
-          echo "Conteúdo principal da IPA:"
-
-          unzip -l "$IPA" \
-            | head -n 100
 
           echo
           echo "========================================"

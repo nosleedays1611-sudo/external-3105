@@ -1,24 +1,136 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract and prepare source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf source build Payload
+          mkdir -p source
+
+          echo "========================================"
+          echo "PROCURANDO SOURCE"
+          echo "========================================"
+
+          SOURCE_ZIP=""
+
+          while IFS= read -r ZIP; do
+            echo "Verificando: $ZIP"
+
+            if unzip -Z1 "$ZIP" 2>/dev/null \
+              | grep -qE '(^|/)ThreeOneOSFive\.xcodeproj/project\.pbxproj$'; then
+
+              SOURCE_ZIP="$ZIP"
+              break
+            fi
+          done < <(
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 3 \
+              -type f \
+              -name '*.zip' \
+              -print
+          )
+
+          if [ -n "$SOURCE_ZIP" ]; then
+            echo
+            echo "Source encontrada:"
+            echo "$SOURCE_ZIP"
+
+            unzip -q "$SOURCE_ZIP" \
+              -d "$GITHUB_WORKSPACE/source"
+
+            SEARCH_ROOT="$GITHUB_WORKSPACE/source"
+          else
+            echo
+            echo "Nenhum ZIP com projeto encontrado."
+            echo "Procurando projeto já extraído..."
+
+            SEARCH_ROOT="$GITHUB_WORKSPACE"
+          fi
+
+          PROJECT="$(find "$SEARCH_ROOT" \
+            -type d \
+            -name 'ThreeOneOSFive.xcodeproj' \
+            -print \
+            -quit)"
+
+          if [ -z "$PROJECT" ]; then
+            echo
+            echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
+            echo
+            echo "Arquivos encontrados no workspace:"
+
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 5 \
+              -print \
+              | head -n 400
+
+            exit 1
+          fi
+
+          ROOT="$(dirname "$PROJECT")"
+
+          VAULT="$ROOT/ThreeOneOSFive/Generated/patchvault.bin"
+          RESOURCE_VAULT="$ROOT/ThreeOneOSFive/Generated/resourcevault.bin"
+          AUTH="$ROOT/ThreeOneOSFive/Auth/CanvaCore.dylib"
           PATCHES_DIR="$ROOT/ThreeOneOSFive/Patches"
+
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "VAULT=$VAULT" >> "$GITHUB_ENV"
+          echo "RESOURCE_VAULT=$RESOURCE_VAULT" >> "$GITHUB_ENV"
+          echo "AUTH=$AUTH" >> "$GITHUB_ENV"
+          echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
 
           echo
           echo "========================================"
-          echo "PREPARANDO PATCH VAULT"
+          echo "PROJETO ENCONTRADO"
+          echo "========================================"
+          echo "$PROJECT"
+
+          echo
+          echo "ROOT:"
+          echo "$ROOT"
+
+          echo
+          echo "PATCHES:"
+          echo "$PATCHES_DIR"
+
+          mkdir -p "$ROOT/ThreeOneOSFive/Generated"
+          mkdir -p "$PATCHES_DIR"
+
+          echo
+          echo "========================================"
+          echo "PROCURANDO PATCHES NOVOS"
           echo "========================================"
 
-          if [ -d "$PATCHES_DIR" ]; then
-            RAW_PATCH_COUNT="$(
-              find "$PATCHES_DIR" \
-                -maxdepth 1 \
-                -type f \
-                -name '*.3105' \
-                | wc -l \
-                | tr -d ' '
-            )"
-          else
-            RAW_PATCH_COUNT=0
-          fi
+          RAW_PATCH_COUNT="$(
+            find "$PATCHES_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.3105' \
+              | wc -l \
+              | tr -d ' '
+          )"
 
-          echo ".3105 encontrados para integração: $RAW_PATCH_COUNT"
+          echo ".3105 encontrados: $RAW_PATCH_COUNT"
 
           if [ "$RAW_PATCH_COUNT" -gt 0 ]; then
             echo
@@ -31,76 +143,137 @@
               -print
 
             echo
-            echo "Procurando gerador do patchvault..."
+            echo "========================================"
+            echo "PROCURANDO GERADOR DO PATCH VAULT"
+            echo "========================================"
 
             VAULT_GENERATOR=""
 
             while IFS= read -r FILE; do
-              case "$FILE" in
-                *.py|*.sh|*.swift)
-                  if grep -qE \
-                    'patchvault|__pv3105|Patches' \
-                    "$FILE" 2>/dev/null; then
-                    VAULT_GENERATOR="$FILE"
-                    break
-                  fi
-                  ;;
-              esac
+              if grep -qE \
+                'patchvault|__pv3105' \
+                "$FILE" 2>/dev/null; then
+
+                VAULT_GENERATOR="$FILE"
+                break
+              fi
             done < <(
               find "$ROOT" \
                 -type f \
-                \( -name '*.py' \
-                   -o -name '*.sh' \
-                   -o -name '*.swift' \) \
+                \( \
+                  -name '*.py' \
+                  -o -name '*.sh' \
+                \) \
                 -print
             )
 
             if [ -z "$VAULT_GENERATOR" ]; then
               echo
               echo "ERRO: existem patches novos, mas o gerador do patchvault não foi encontrado."
-              echo "Os arquivos NÃO serão apagados."
+              echo "Nenhum arquivo .3105 será removido."
               exit 1
             fi
 
+            echo
             echo "Gerador encontrado:"
             echo "$VAULT_GENERATOR"
 
+            GENERATOR_DIR="$(dirname "$VAULT_GENERATOR")"
+            GENERATOR_NAME="$(basename "$VAULT_GENERATOR")"
+
+            echo
+            echo "Executando gerador em:"
+            echo "$GENERATOR_DIR"
+
             case "$VAULT_GENERATOR" in
               *.py)
-                python3 "$VAULT_GENERATOR"
+                (
+                  cd "$GENERATOR_DIR"
+                  python3 "$GENERATOR_NAME"
+                )
                 ;;
 
               *.sh)
-                chmod +x "$VAULT_GENERATOR"
-                "$VAULT_GENERATOR"
+                (
+                  cd "$GENERATOR_DIR"
+                  chmod +x "$GENERATOR_NAME"
+                  "./$GENERATOR_NAME"
+                )
                 ;;
 
-              *.swift)
-                swift "$VAULT_GENERATOR"
+              *)
+                echo "ERRO: gerador não suportado."
+                exit 1
                 ;;
             esac
 
+            echo
+            echo "========================================"
+            echo "VALIDANDO PATCH VAULT GERADO"
+            echo "========================================"
+
             if [ ! -s "$VAULT" ]; then
               echo "ERRO: patchvault.bin não foi gerado."
+              echo "Nenhum .3105 será removido."
               exit 1
             fi
 
-            echo
-            echo "Vault gerado:"
+            echo "Patch vault gerado:"
             ls -lh "$VAULT"
 
             echo
-            echo "Removendo .3105 somente após gerar o vault..."
+            echo "Removendo .3105 somente depois da geração bem-sucedida..."
 
             find "$PATCHES_DIR" \
               -maxdepth 1 \
               -type f \
               -name '*.3105' \
               -delete
+
           else
-            echo "Nenhum patch novo para integrar."
-            echo "Usando patchvault.bin existente."
+            echo
+            echo "Nenhum patch novo encontrado."
+
+            if [ ! -s "$VAULT" ]; then
+              echo "ERRO: nenhum patch novo e patchvault.bin não existe."
+              exit 1
+            fi
+
+            echo "Usando patchvault.bin existente:"
+            ls -lh "$VAULT"
           fi
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO HARDENING"
+          echo "========================================"
+
+          if [ ! -s "$VAULT" ]; then
+            echo "ERRO: patchvault.bin não encontrado."
+            exit 1
+          fi
+
+          if [ ! -s "$RESOURCE_VAULT" ]; then
+            echo "ERRO: resourcevault.bin não encontrado."
+            exit 1
+          fi
+
+          if [ ! -s "$AUTH" ]; then
+            echo "ERRO: CanvaCore.dylib não encontrada."
+            exit 1
+          fi
+
+          echo
+          echo "Patch vault:"
+          ls -lh "$VAULT"
+
+          echo
+          echo "Resource vault:"
+          ls -lh "$RESOURCE_VAULT"
+
+          echo
+          echo "Auth:"
+          ls -lh "$AUTH"
 
           REMAINING_PATCHES="$(
             find "$ROOT/ThreeOneOSFive" \
@@ -111,16 +284,271 @@
           )"
 
           echo
-          echo ".3105 restantes: $REMAINING_PATCHES"
+          echo ".3105 crus restantes: $REMAINING_PATCHES"
 
           if [ "$REMAINING_PATCHES" -ne 0 ]; then
+            echo
             echo "ERRO: ainda existem .3105 crus depois da integração."
+
             find "$ROOT/ThreeOneOSFive" \
               -type f \
               -name '*.3105' \
               -print
+
             exit 1
           fi
 
           echo
-          echo "Source MAX HARDENED preparada."
+          echo "========================================"
+          echo "SOURCE MAX HARDENED PREPARADA"
+          echo "========================================"
+
+      - name: Show Xcode version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/build"
+          rm -f "$GITHUB_WORKSPACE/xcodebuild.log"
+
+          echo "========================================"
+          echo "BUILD MAX HARDENED"
+          echo "========================================"
+          echo "$PROJECT"
+
+          set +e
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -target 3105 \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            SYMROOT="$GITHUB_WORKSPACE/build" \
+            OBJROOT="$GITHUB_WORKSPACE/build/obj" \
+            build \
+            2>&1 | tee "$GITHUB_WORKSPACE/xcodebuild.log"
+
+          RC=${PIPESTATUS[0]}
+
+          set -e
+
+          echo
+          echo "xcodebuild exit code: $RC"
+
+          if [ "$RC" -ne 0 ]; then
+            echo
+            echo "========================================"
+            echo "BUILD FALHOU"
+            echo "========================================"
+
+            grep -n -E \
+              'error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift|Ld ' \
+              "$GITHUB_WORKSPACE/xcodebuild.log" \
+              | tail -n 200 || true
+
+            exit "$RC"
+          fi
+
+          echo
+          echo "BUILD CONCLUÍDO."
+
+      - name: Harden and package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$(find "$GITHUB_WORKSPACE/build" \
+            -type d \
+            -name '3105.app' \
+            -print \
+            -quit)"
+
+          if [ -z "$APP" ]; then
+            echo "ERRO: 3105.app não encontrado."
+            exit 1
+          fi
+
+          EXE="$APP/3105"
+
+          if [ ! -f "$EXE" ]; then
+            echo "ERRO: executável 3105 não encontrado."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "APP ENCONTRADO"
+          echo "========================================"
+          echo "$APP"
+
+          echo
+          echo "Executável:"
+          ls -lh "$EXE"
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO VAULTS NO MACH-O"
+          echo "========================================"
+
+          if ! otool -l "$EXE" \
+            | grep -q 'sectname __pv3105'; then
+
+            echo "ERRO: __pv3105 não encontrado."
+            exit 1
+          fi
+
+          echo "__pv3105 OK"
+
+          if ! otool -l "$EXE" \
+            | grep -q 'sectname __rv3105'; then
+
+            echo "ERRO: __rv3105 não encontrado."
+            exit 1
+          fi
+
+          echo "__rv3105 OK"
+
+          echo
+          echo "Removendo símbolos locais/debug..."
+
+          strip -S -x "$EXE" || true
+
+          echo
+          echo "Removendo recursos desnecessários..."
+
+          rm -rf "$APP/Patches"
+          rm -f "$APP/PkgInfo"
+
+          find "$APP" \
+            -maxdepth 1 \
+            -type d \
+            -name '*.lproj' \
+            -exec rm -rf {} +
+
+          RAW_APP="$(
+            find "$APP" \
+              -type f \
+              -name '*.3105' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo
+          echo ".3105 crus no app: $RAW_APP"
+
+          if [ "$RAW_APP" -ne 0 ]; then
+            echo "ERRO: .3105 cru encontrado no app."
+
+            find "$APP" \
+              -type f \
+              -name '*.3105' \
+              -print
+
+            exit 1
+          fi
+
+          LPROJ_COUNT="$(
+            find "$APP" \
+              -type d \
+              -name '*.lproj' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo ".lproj no app: $LPROJ_COUNT"
+
+          if [ "$LPROJ_COUNT" -ne 0 ]; then
+            echo "ERRO: .lproj ainda presente."
+            exit 1
+          fi
+
+          if [ ! -f "$APP/Frameworks/CanvaCore.dylib" ]; then
+            echo "ERRO: CanvaCore.dylib ausente no app."
+            exit 1
+          fi
+
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf Payload
+          mkdir -p Payload
+
+          cp -R "$APP" Payload/3105.app
+
+          IPA="3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa"
+
+          rm -f "$IPA"
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            "$IPA"
+
+          echo
+          echo "========================================"
+          echo "VALIDANDO IPA FINAL"
+          echo "========================================"
+
+          RAW_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c '\.3105$' || true
+          )"
+
+          echo ".3105 crus na IPA: $RAW_IPA"
+
+          if [ "$RAW_IPA" -ne 0 ]; then
+            echo "ERRO: .3105 cru encontrado na IPA."
+            exit 1
+          fi
+
+          LPROJ_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c '\.lproj/' || true
+          )"
+
+          echo ".lproj na IPA: $LPROJ_IPA"
+
+          if [ "$LPROJ_IPA" -ne 0 ]; then
+            echo "ERRO: .lproj encontrado na IPA."
+            exit 1
+          fi
+
+          echo
+          echo "Conteúdo principal da IPA:"
+
+          unzip -l "$IPA" \
+            | head -n 100
+
+          echo
+          echo "========================================"
+          echo "IPA MAX HARDENED CRIADA"
+          echo "========================================"
+
+          ls -lh "$IPA"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3105-MAX-HARDENED-unsigned-ipa
+          path: 3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-max-hardened-log
+          path: xcodebuild.log
+          if-no-files-found: ignore

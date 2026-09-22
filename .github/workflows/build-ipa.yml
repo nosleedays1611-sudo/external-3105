@@ -95,7 +95,7 @@ jobs:
 
           PATCH_BRIDGE="$ROOT/ThreeOneOSFive/helpers/PatchVaultBridge.generated.c"
 
-          AUTH="$ROOT/ThreeOneOSFive/Auth/CanvaCore.dylib"
+          AUTH="$ROOT/ThreeOneOSFive/Auth/ExternalAuth.dylib"
 
           VAULT_GENERATOR="$ROOT/tools/build_patch_vault.py"
 
@@ -137,7 +137,7 @@ jobs:
           fi
 
           if [ ! -s "$AUTH" ]; then
-            echo "ERRO: CanvaCore.dylib não encontrada."
+            echo "ERRO: ExternalAuth.dylib não encontrada."
             exit 1
           fi
 
@@ -151,7 +151,7 @@ jobs:
           ls -lh "$RESOURCE_VAULT"
 
           echo
-          echo "CanvaCore.dylib:"
+          echo "ExternalAuth.dylib:"
           ls -lh "$AUTH"
 
           echo
@@ -344,7 +344,7 @@ jobs:
           fi
 
           if [ ! -s "$AUTH" ]; then
-            echo "ERRO: CanvaCore.dylib ausente."
+            echo "ERRO: ExternalAuth.dylib ausente."
             exit 1
           fi
 
@@ -540,10 +540,19 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f "$APP/Frameworks/CanvaCore.dylib" ]; then
-            echo "ERRO: CanvaCore.dylib ausente no app."
+          if [ ! -f "$APP/Frameworks/ExternalAuth.dylib" ]; then
+            echo "ERRO: ExternalAuth.dylib ausente no app."
             exit 1
           fi
+
+          if ! otool -L "$EXE" \
+            | grep -Fq '@rpath/ExternalAuth.dylib'; then
+            echo "ERRO: ExternalAuth.dylib não está ligada ao executável."
+            otool -L "$EXE"
+            exit 1
+          fi
+
+          echo "ExternalAuth.dylib embutida e ligada ao executável: OK"
 
           cd "$GITHUB_WORKSPACE"
 

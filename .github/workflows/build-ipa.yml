@@ -12,8 +12,17 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # LOCALIZAR / EXTRAIR SOURCE
+      # ============================================================
 
       - name: Extract and prepare source
         shell: bash
@@ -32,14 +41,28 @@ jobs:
           SOURCE_ZIP=""
 
           while IFS= read -r ZIP; do
+
             echo "Verificando: $ZIP"
 
+            # Ignora ZIPs gerados dentro de pastas de build/source.
+            case "$ZIP" in
+              "$GITHUB_WORKSPACE/source/"*)
+                continue
+                ;;
+              "$GITHUB_WORKSPACE/build/"*)
+                continue
+                ;;
+            esac
+
+            # Procura o projeto real e ignora entradas __MACOSX.
             if unzip -Z1 "$ZIP" 2>/dev/null \
+              | grep -vE '(^|/)__MACOSX/' \
               | grep -qE '(^|/)ThreeOneOSFive\.xcodeproj/project\.pbxproj$'; then
 
               SOURCE_ZIP="$ZIP"
               break
             fi
+
           done < <(
             find "$GITHUB_WORKSPACE" \
               -maxdepth 3 \
@@ -49,48 +72,82 @@ jobs:
           )
 
           if [ -n "$SOURCE_ZIP" ]; then
+
             echo
             echo "Source encontrada:"
             echo "$SOURCE_ZIP"
 
+            # IMPORTANTE:
+            # não extrair lixo criado pelo macOS.
             unzip -q "$SOURCE_ZIP" \
-              -d "$GITHUB_WORKSPACE/source"
+              -d "$GITHUB_WORKSPACE/source" \
+              -x "__MACOSX/*" "*/__MACOSX/*"
+
+            # Segurança adicional caso algum ZIP tenha estrutura estranha.
+            find "$GITHUB_WORKSPACE/source" \
+              -type d \
+              -name '__MACOSX' \
+              -prune \
+              -exec rm -rf {} + 2>/dev/null || true
+
+            find "$GITHUB_WORKSPACE/source" \
+              -type f \
+              -name '._*' \
+              -delete 2>/dev/null || true
 
             SEARCH_ROOT="$GITHUB_WORKSPACE/source"
+
           else
+
             echo
             echo "Nenhum ZIP com projeto encontrado."
             echo "Procurando projeto já extraído..."
 
             SEARCH_ROOT="$GITHUB_WORKSPACE"
+
           fi
 
-          PROJECT="$(find "$SEARCH_ROOT" \
-            -type d \
-            -name 'ThreeOneOSFive.xcodeproj' \
-            -print \
-            -quit)"
+
+          # ========================================================
+          # LOCALIZAR PROJETO
+          # ========================================================
+
+          PROJECT="$(
+            find "$SEARCH_ROOT" \
+              -type d \
+              -name 'ThreeOneOSFive.xcodeproj' \
+              ! -path '*/__MACOSX/*' \
+              ! -path '*/build/*' \
+              -print \
+              -quit
+          )"
 
           if [ -z "$PROJECT" ]; then
+
             echo
             echo "ERRO: ThreeOneOSFive.xcodeproj não encontrado."
             echo
+
             echo "Arquivos encontrados:"
 
             find "$GITHUB_WORKSPACE" \
-              -maxdepth 5 \
+              -maxdepth 6 \
+              ! -path '*/__MACOSX/*' \
               -print \
-              | head -n 400
+              | head -n 500
 
             exit 1
           fi
 
+
           ROOT="$(dirname "$PROJECT")"
 
           PATCHES_DIR="$ROOT/ThreeOneOSFive/Patches"
+
           GENERATED_DIR="$ROOT/ThreeOneOSFive/Generated"
 
           VAULT="$GENERATED_DIR/patchvault.bin"
+
           RESOURCE_VAULT="$GENERATED_DIR/resourcevault.bin"
 
           PATCH_BRIDGE="$ROOT/ThreeOneOSFive/helpers/PatchVaultBridge.generated.c"
@@ -99,13 +156,20 @@ jobs:
 
           VAULT_GENERATOR="$ROOT/tools/build_patch_vault.py"
 
+
+          # ========================================================
+          # EXPORTAR VARIÁVEIS PARA AS PRÓXIMAS ETAPAS
+          # ========================================================
+
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "PATCHES_DIR=$PATCHES_DIR" >> "$GITHUB_ENV"
+          echo "GENERATED_DIR=$GENERATED_DIR" >> "$GITHUB_ENV"
           echo "VAULT=$VAULT" >> "$GITHUB_ENV"
           echo "RESOURCE_VAULT=$RESOURCE_VAULT" >> "$GITHUB_ENV"
           echo "PATCH_BRIDGE=$PATCH_BRIDGE" >> "$GITHUB_ENV"
           echo "AUTH=$AUTH" >> "$GITHUB_ENV"
+
 
           echo
           echo "========================================"
@@ -122,31 +186,58 @@ jobs:
           echo "PATCHES:"
           echo "$PATCHES_DIR"
 
+          echo
+          echo "AUTH:"
+          echo "$AUTH"
+
+
           mkdir -p "$PATCHES_DIR"
           mkdir -p "$GENERATED_DIR"
           mkdir -p "$(dirname "$PATCH_BRIDGE")"
+
+
+          # ========================================================
+          # VALIDAR ARQUIVOS DA SOURCE
+          # ========================================================
 
           echo
           echo "========================================"
           echo "VALIDANDO ARQUIVOS BASE"
           echo "========================================"
 
+
           if [ ! -s "$RESOURCE_VAULT" ]; then
+
             echo "ERRO: resourcevault.bin não encontrado."
+            echo
+            echo "Esperado em:"
+            echo "$RESOURCE_VAULT"
+
             exit 1
           fi
+
 
           if [ ! -s "$AUTH" ]; then
+
             echo "ERRO: ExternalAuth.dylib não encontrada."
+            echo
+            echo "Esperado em:"
+            echo "$AUTH"
+
             exit 1
           fi
+
 
           if [ ! -f "$VAULT_GENERATOR" ]; then
+
             echo "ERRO: build_patch_vault.py não encontrado:"
             echo "$VAULT_GENERATOR"
+
             exit 1
           fi
 
+
+          echo
           echo "resourcevault.bin:"
           ls -lh "$RESOURCE_VAULT"
 
@@ -155,24 +246,41 @@ jobs:
           ls -lh "$AUTH"
 
           echo
+          echo "Tipo da dylib:"
+          file "$AUTH"
+
+          echo
+          echo "Dependências da dylib:"
+          otool -L "$AUTH" || true
+
+          echo
           echo "Gerador:"
           ls -lh "$VAULT_GENERATOR"
 
+
+          # ========================================================
+          # NORMALIZAR NOMES .3105.3105
+          # ========================================================
+
           echo
           echo "========================================"
-          echo "NORMALIZANDO NOMES"
+          echo "NORMALIZANDO NOMES DOS PATCHES"
           echo "========================================"
 
           while IFS= read -r -d '' FILE; do
+
             DEST="${FILE%.3105}"
 
             if [ -e "$DEST" ]; then
+
               echo
-              echo "ERRO: já existe o destino:"
+              echo "ERRO: destino já existe:"
               echo "$DEST"
+
               exit 1
             fi
 
+            echo
             echo "Renomeando:"
             echo "$FILE"
             echo "->"
@@ -188,6 +296,11 @@ jobs:
               -print0
           )
 
+
+          # ========================================================
+          # CONTAR PATCHES NOVOS
+          # ========================================================
+
           PATCH_COUNT="$(
             find "$PATCHES_DIR" \
               -maxdepth 1 \
@@ -197,6 +310,7 @@ jobs:
               | tr -d ' '
           )"
 
+
           echo
           echo "========================================"
           echo "PATCHES ENCONTRADOS"
@@ -204,13 +318,22 @@ jobs:
 
           echo "Quantidade: $PATCH_COUNT"
 
+
           if [ "$PATCH_COUNT" -gt 0 ]; then
+
+            echo
+            echo "Patches novos:"
 
             find "$PATCHES_DIR" \
               -maxdepth 1 \
               -type f \
               -name '*.3105' \
               -print
+
+
+            # ======================================================
+            # PYTHON VENV
+            # ======================================================
 
             echo
             echo "========================================"
@@ -225,10 +348,12 @@ jobs:
 
             python3 -m venv "$PYTHON_VENV"
 
+
             echo
             echo "Python utilizado:"
 
             "$PYTHON_VENV/bin/python" --version
+
 
             echo
             echo "Atualizando pip..."
@@ -237,12 +362,18 @@ jobs:
               -m pip install \
               --upgrade pip
 
+
             echo
             echo "Instalando cryptography..."
 
             "$PYTHON_VENV/bin/python" \
               -m pip install \
               cryptography
+
+
+            # ======================================================
+            # GERAR/MERGE PATCH VAULT
+            # ======================================================
 
             echo
             echo "========================================"
@@ -255,21 +386,32 @@ jobs:
               --vault "$VAULT" \
               --bridge "$PATCH_BRIDGE"
 
+
+            # ======================================================
+            # VALIDAR VAULT
+            # ======================================================
+
             echo
             echo "========================================"
             echo "VALIDANDO VAULT GERADO"
             echo "========================================"
 
+
             if [ ! -s "$VAULT" ]; then
+
               echo "ERRO: patchvault.bin não foi gerado."
               exit 1
             fi
 
+
             if [ ! -s "$PATCH_BRIDGE" ]; then
+
               echo "ERRO: PatchVaultBridge.generated.c não foi gerado."
               exit 1
             fi
 
+
+            echo
             echo "Patch vault:"
             ls -lh "$VAULT"
 
@@ -277,9 +419,14 @@ jobs:
             echo "Bridge:"
             ls -lh "$PATCH_BRIDGE"
 
+
+            # ======================================================
+            # REMOVER PATCHES CRUS
+            # ======================================================
+
             echo
             echo "========================================"
-            echo "REMOVENDO PATCHES CRUS"
+            echo "REMOVENDO PATCHES .3105 CRUS"
             echo "========================================"
 
             find "$PATCHES_DIR" \
@@ -288,27 +435,39 @@ jobs:
               -name '*.3105' \
               -delete
 
+
           else
 
             echo
             echo "Nenhum .3105 novo encontrado."
-            echo "Usando vault existente."
+            echo "Usando patch vault existente."
+
 
             if [ ! -s "$VAULT" ]; then
+
               echo "ERRO: patchvault.bin não existe."
               exit 1
             fi
 
+
             if [ ! -s "$PATCH_BRIDGE" ]; then
+
               echo "ERRO: PatchVaultBridge.generated.c não existe."
               exit 1
             fi
+
           fi
+
+
+          # ========================================================
+          # VALIDAR SOURCE FINAL
+          # ========================================================
 
           echo
           echo "========================================"
           echo "VALIDANDO SOURCE FINAL"
           echo "========================================"
+
 
           RAW_PATCH_COUNT="$(
             find "$ROOT/ThreeOneOSFive" \
@@ -318,7 +477,9 @@ jobs:
               | tr -d ' '
           )"
 
+
           echo ".3105 crus restantes: $RAW_PATCH_COUNT"
+
 
           if [ "$RAW_PATCH_COUNT" -ne 0 ]; then
 
@@ -333,20 +494,27 @@ jobs:
             exit 1
           fi
 
+
           if [ ! -s "$VAULT" ]; then
+
             echo "ERRO: patchvault.bin ausente."
             exit 1
           fi
 
+
           if [ ! -s "$RESOURCE_VAULT" ]; then
+
             echo "ERRO: resourcevault.bin ausente."
             exit 1
           fi
 
+
           if [ ! -s "$AUTH" ]; then
+
             echo "ERRO: ExternalAuth.dylib ausente."
             exit 1
           fi
+
 
           echo
           echo "Patch vault:"
@@ -357,13 +525,20 @@ jobs:
           ls -lh "$RESOURCE_VAULT"
 
           echo
-          echo "Auth:"
+          echo "External Auth:"
           ls -lh "$AUTH"
+
 
           echo
           echo "========================================"
           echo "SOURCE PREPARADA COM SUCESSO"
           echo "========================================"
+
+
+
+      # ============================================================
+      # XCODE
+      # ============================================================
 
       - name: Show Xcode version
         shell: bash
@@ -373,6 +548,12 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
 
+
+
+      # ============================================================
+      # BUILD
+      # ============================================================
+
       - name: Build unsigned app
         shell: bash
         run: |
@@ -381,11 +562,15 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/build"
           rm -f "$GITHUB_WORKSPACE/xcodebuild.log"
 
+
           echo "========================================"
-          echo "BUILD MAX HARDENED"
+          echo "BUILD EXTREME AUTH"
           echo "========================================"
 
+          echo
+          echo "Projeto:"
           echo "$PROJECT"
+
 
           set +e
 
@@ -406,8 +591,10 @@ jobs:
 
           set -e
 
+
           echo
           echo "xcodebuild exit code: $RC"
+
 
           if [ "$RC" -ne 0 ]; then
 
@@ -417,90 +604,225 @@ jobs:
             echo "========================================"
 
             grep -n -E \
-              'error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift|Ld ' \
+              'error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift|Ld |Undefined symbols|duplicate symbol' \
               "$GITHUB_WORKSPACE/xcodebuild.log" \
-              | tail -n 200 || true
+              | tail -n 250 || true
 
             exit "$RC"
           fi
+
 
           echo
           echo "========================================"
           echo "BUILD CONCLUÍDO"
           echo "========================================"
 
+
+
+      # ============================================================
+      # VALIDAR E EMPACOTAR
+      # ============================================================
+
       - name: Harden and package IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          APP="$(find "$GITHUB_WORKSPACE/build" \
-            -type d \
-            -name '3105.app' \
-            -print \
-            -quit)"
+
+          APP="$(
+            find "$GITHUB_WORKSPACE/build" \
+              -type d \
+              -name '3105.app' \
+              -print \
+              -quit
+          )"
+
 
           if [ -z "$APP" ]; then
+
             echo "ERRO: 3105.app não encontrado."
             exit 1
           fi
 
+
           EXE="$APP/3105"
 
+
           if [ ! -f "$EXE" ]; then
+
             echo "ERRO: executável 3105 não encontrado."
             exit 1
           fi
 
+
+          echo
           echo "========================================"
           echo "APP ENCONTRADO"
           echo "========================================"
 
           echo "$APP"
 
+
           echo
           echo "Executável:"
           ls -lh "$EXE"
+
+
+          # ========================================================
+          # VALIDAR MACH-O
+          # ========================================================
 
           echo
           echo "========================================"
           echo "VALIDANDO VAULTS NO MACH-O"
           echo "========================================"
 
+
           if ! otool -l "$EXE" \
             | grep -q 'sectname __pv3105'; then
 
-            echo "ERRO: __pv3105 não encontrado."
+            echo "ERRO: __pv3105 não encontrado no executável."
             exit 1
           fi
 
           echo "__pv3105 OK"
 
+
           if ! otool -l "$EXE" \
             | grep -q 'sectname __rv3105'; then
 
-            echo "ERRO: __rv3105 não encontrado."
+            echo "ERRO: __rv3105 não encontrado no executável."
             exit 1
           fi
 
           echo "__rv3105 OK"
 
+
+          # ========================================================
+          # VALIDAR DEPENDÊNCIA DA AUTH
+          # ========================================================
+
           echo
+          echo "========================================"
+          echo "VALIDANDO DEPENDÊNCIA EXTERNAL AUTH"
+          echo "========================================"
+
+
+          echo
+          echo "Dependências do executável:"
+
+          otool -L "$EXE"
+
+
+          if ! otool -L "$EXE" \
+            | grep -q '@rpath/ExternalAuth.dylib'; then
+
+            echo
+            echo "ERRO: executável não possui dependência forte de:"
+            echo "@rpath/ExternalAuth.dylib"
+
+            exit 1
+          fi
+
+
+          echo
+          echo "@rpath/ExternalAuth.dylib OK"
+
+
+          # ========================================================
+          # VALIDAR DYLIB NO APP
+          # ========================================================
+
+          AUTH_APP="$APP/Frameworks/ExternalAuth.dylib"
+
+
+          if [ ! -s "$AUTH_APP" ]; then
+
+            echo
+            echo "ERRO: ExternalAuth.dylib ausente no app."
+
+            echo
+            echo "Esperado:"
+            echo "$AUTH_APP"
+
+            echo
+            echo "Frameworks encontrados:"
+
+            find "$APP" \
+              -maxdepth 3 \
+              -type f \
+              -print \
+              | sort
+
+            exit 1
+          fi
+
+
+          echo
+          echo "ExternalAuth.dylib incorporada:"
+          ls -lh "$AUTH_APP"
+
+          echo
+          echo "Tipo:"
+          file "$AUTH_APP"
+
+          echo
+          echo "Install name:"
+          otool -D "$AUTH_APP" || true
+
+
+          # ========================================================
+          # REMOVER SÍMBOLOS
+          # ========================================================
+
+          echo
+          echo "========================================"
+          echo "STRIP"
+          echo "========================================"
+
           echo "Removendo símbolos locais/debug..."
 
           strip -S -x "$EXE" || true
+          strip -S -x "$AUTH_APP" || true
+
+
+          # ========================================================
+          # LIMPEZA
+          # ========================================================
 
           echo
-          echo "Removendo recursos desnecessários..."
+          echo "========================================"
+          echo "LIMPANDO APP"
+          echo "========================================"
+
 
           rm -rf "$APP/Patches"
           rm -f "$APP/PkgInfo"
+
 
           find "$APP" \
             -maxdepth 1 \
             -type d \
             -name '*.lproj' \
             -exec rm -rf {} +
+
+
+          find "$APP" \
+            -type f \
+            -name '._*' \
+            -delete 2>/dev/null || true
+
+
+          find "$APP" \
+            -type d \
+            -name '__MACOSX' \
+            -prune \
+            -exec rm -rf {} + 2>/dev/null || true
+
+
+          # ========================================================
+          # GARANTIR QUE NÃO HÁ .3105 CRU
+          # ========================================================
 
           RAW_APP="$(
             find "$APP" \
@@ -510,8 +832,10 @@ jobs:
               | tr -d ' '
           )"
 
+
           echo
           echo ".3105 crus no app: $RAW_APP"
+
 
           if [ "$RAW_APP" -ne 0 ]; then
 
@@ -525,6 +849,11 @@ jobs:
             exit 1
           fi
 
+
+          # ========================================================
+          # LPROJ
+          # ========================================================
+
           LPROJ_COUNT="$(
             find "$APP" \
               -type d \
@@ -533,37 +862,68 @@ jobs:
               | tr -d ' '
           )"
 
+
           echo ".lproj no app: $LPROJ_COUNT"
 
+
           if [ "$LPROJ_COUNT" -ne 0 ]; then
+
             echo "ERRO: .lproj ainda presente."
             exit 1
           fi
 
-          if [ ! -f "$APP/Frameworks/ExternalAuth.dylib" ]; then
-            echo "ERRO: ExternalAuth.dylib ausente no app."
+
+          # ========================================================
+          # REVALIDAR AUTH APÓS LIMPEZA
+          # ========================================================
+
+          if [ ! -s "$APP/Frameworks/ExternalAuth.dylib" ]; then
+
+            echo "ERRO: ExternalAuth.dylib ausente após limpeza."
             exit 1
           fi
+
 
           if ! otool -L "$EXE" \
-            | grep -Fq '@rpath/ExternalAuth.dylib'; then
-            echo "ERRO: ExternalAuth.dylib não está ligada ao executável."
-            otool -L "$EXE"
+            | grep -q '@rpath/ExternalAuth.dylib'; then
+
+            echo "ERRO: dependência ExternalAuth perdida."
             exit 1
           fi
 
-          echo "ExternalAuth.dylib embutida e ligada ao executável: OK"
+
+          # ========================================================
+          # CRIAR PAYLOAD
+          # ========================================================
 
           cd "$GITHUB_WORKSPACE"
+
 
           rm -rf Payload
           mkdir -p Payload
 
+
           cp -R "$APP" Payload/3105.app
 
-          IPA="3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa"
+
+          # Remove metadata macOS caso exista.
+          find Payload \
+            -type f \
+            -name '._*' \
+            -delete 2>/dev/null || true
+
+
+          IPA="3105-EXTERNAL-UI-1.0.1-EXTREME-AUTH-unsigned.ipa"
+
 
           rm -f "$IPA"
+
+
+          echo
+          echo "========================================"
+          echo "GERANDO IPA"
+          echo "========================================"
+
 
           ditto \
             -c \
@@ -573,58 +933,120 @@ jobs:
             Payload \
             "$IPA"
 
+
+          # ========================================================
+          # VALIDAR IPA FINAL
+          # ========================================================
+
           echo
           echo "========================================"
           echo "VALIDANDO IPA FINAL"
           echo "========================================"
 
+
           if [ ! -s "$IPA" ]; then
+
             echo "ERRO: IPA não foi criada."
             exit 1
           fi
+
 
           RAW_IPA="$(
             unzip -l "$IPA" \
               | grep -c '\.3105$' || true
           )"
 
+
           echo ".3105 crus na IPA: $RAW_IPA"
 
+
           if [ "$RAW_IPA" -ne 0 ]; then
+
             echo "ERRO: .3105 cru encontrado na IPA."
             exit 1
           fi
+
 
           LPROJ_IPA="$(
             unzip -l "$IPA" \
               | grep -c '\.lproj/' || true
           )"
 
+
           echo ".lproj na IPA: $LPROJ_IPA"
 
+
           if [ "$LPROJ_IPA" -ne 0 ]; then
+
             echo "ERRO: .lproj encontrado na IPA."
             exit 1
           fi
 
+
+          AUTH_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c 'Payload/3105.app/Frameworks/ExternalAuth.dylib' || true
+          )"
+
+
+          echo "ExternalAuth.dylib na IPA: $AUTH_IPA"
+
+
+          if [ "$AUTH_IPA" -lt 1 ]; then
+
+            echo "ERRO: ExternalAuth.dylib não entrou na IPA."
+            exit 1
+          fi
+
+
+          MACOSX_IPA="$(
+            unzip -l "$IPA" \
+              | grep -c '__MACOSX/' || true
+          )"
+
+
+          echo "__MACOSX na IPA: $MACOSX_IPA"
+
+
+          if [ "$MACOSX_IPA" -ne 0 ]; then
+
+            echo "ERRO: __MACOSX encontrado na IPA."
+            exit 1
+          fi
+
+
           echo
           echo "========================================"
-          echo "IPA MAX HARDENED CRIADA"
-          echo "============dnjdjsjss============================"
+          echo "IPA EXTREME AUTH CRIADA"
+          echo "========================================"
 
           ls -lh "$IPA"
+
+
+
+      # ============================================================
+      # UPLOAD IPA
+      # ============================================================
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: 3105-MAX-HARDENED-unsigned-ipa
-          path: 3105-EXTERNAL-UI-1.0.1-MAX-HARDENED-unsigned.ipa
+          name: 3105-EXTREME-AUTH-unsigned-ipa
+          path: 3105-EXTERNAL-UI-1.0.1-EXTREME-AUTH-unsigned.ipa
           if-no-files-found: error
+          retention-days: 14
+
+
+
+      # ============================================================
+      # LOG DE ERRO
+      # ============================================================
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: xcodebuild-max-hardened-log
+          name: xcodebuild-extreme-auth-log
           path: xcodebuild.log
           if-no-files-found: ignore
+          retention-days: 7

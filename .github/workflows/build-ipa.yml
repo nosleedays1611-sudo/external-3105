@@ -1,446 +1,953 @@
-name: Build 3105 External UI
+name: Build EXTERNAL 3105 2.0 IPA
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+      - master
+
+    paths:
+      - "**/*.swift"
+      - "**/*.m"
+      - "**/*.c"
+      - "**/*.h"
+      - "**/*.plist"
+      - "**/*.xcodeproj/**"
+      - "**/*.xcassets/**"
+      - "**/*.dylib"
+      - "**/*.zip"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-3105-external-ui-${{ github.ref }}
+  group: external-3105-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+
   build:
+
+    name: Build unsigned IPA
+
     runs-on: macos-15
-    timeout-minutes: 45
+
+    timeout-minutes: 35
+
+    env:
+
+      TARGET_NAME: "3105"
+
+      CONFIGURATION: "Release"
+
+      SDK: "iphoneos"
+
+      SOURCE_DIR: "${{ github.workspace }}/source"
+
+      BUILD_DIR: "${{ github.workspace }}/build"
+
+      OUTPUT_DIR: "${{ github.workspace }}/output"
+
+      IPA_NAME: "3105-2.0-EXTERNAL-REMOTE.ipa"
+
+      EXTERNAL_REMOTE_CONFIG_URL: "${{ vars.EXTERNAL_REMOTE_CONFIG_URL }}"
 
     steps:
 
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
+
+      - name: Show runner and Xcode
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          XCODE_APP="$(find /Applications \
-            -maxdepth 1 \
-            -type d \
-            -name 'Xcode*.app' \
-            -print \
-            | sort -V \
-            | tail -n 1)"
+          echo "========================================"
+          echo "RUNNER"
+          echo "========================================"
 
-          if [ -z "$XCODE_APP" ]; then
-            echo "::error::No Xcode installation found."
-            exit 1
-          fi
+          sw_vers
 
-          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo ""
+          echo "========================================"
+          echo "XCODE"
+          echo "========================================"
 
-          echo "Xcode:"
           xcodebuild -version
 
-      - name: Extract 3105 source
+          echo ""
+          echo "Xcode path:"
+          xcode-select -p
+
+          echo ""
+          echo "Workspace:"
+          echo "$GITHUB_WORKSPACE"
+
+
+      - name: Locate and prepare source
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          ZIP="$GITHUB_WORKSPACE/3105-1.0.1-EXTERNAL-UI-source.zip"
-          SOURCE_DIR="$GITHUB_WORKSPACE/source"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::Source ZIP not found:"
-            echo "$ZIP"
-            echo ""
-            echo "Files in repository:"
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort
-            exit 1
-          fi
-
-          echo "Source ZIP:"
-          ls -lh "$ZIP"
+          echo "========================================"
+          echo "PREPARING SOURCE"
+          echo "========================================"
 
           rm -rf "$SOURCE_DIR"
+          rm -rf "$BUILD_DIR"
+          rm -rf "$OUTPUT_DIR"
+
           mkdir -p "$SOURCE_DIR"
+          mkdir -p "$BUILD_DIR"
+          mkdir -p "$OUTPUT_DIR"
 
-          unzip -q "$ZIP" -d "$SOURCE_DIR"
 
           echo ""
-          echo "Extracted source:"
-          find "$SOURCE_DIR" \
-            -maxdepth 3 \
-            -print \
-            | sort \
-            | head -n 300
+          echo "Checking if project is already unpacked..."
 
-      - name: Locate ThreeOneOSFive project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Searching extracted source..."
-
-          PROJECT_FILE="$(find "$GITHUB_WORKSPACE/source" \
-            -type f \
+          DIRECT_PROJECT="$(find "$GITHUB_WORKSPACE" \
+            -path '*/__MACOSX/*' -prune -o \
+            -path '*/source/*' -prune -o \
+            -path '*/build/*' -prune -o \
+            -path '*/output/*' -prune -o \
+            -name project.pbxproj \
             -path '*/ThreeOneOSFive.xcodeproj/project.pbxproj' \
-            -print \
-            -quit)"
+            -print -quit)"
 
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "::error::ThreeOneOSFive.xcodeproj not found inside source ZIP."
 
-            echo ""
-            echo "Xcode projects found:"
-            find "$GITHUB_WORKSPACE/source" \
-              -type d \
-              -name '*.xcodeproj' \
-              -print || true
+          if [[ -n "$DIRECT_PROJECT" ]]; then
 
             echo ""
-            echo "Source tree:"
-            find "$GITHUB_WORKSPACE/source" \
-              -maxdepth 5 \
-              -print \
-              | sort \
-              | head -n 500
+            echo "Found unpacked Xcode project:"
+            echo "$DIRECT_PROJECT"
 
-            exit 1
+            PROJECT_DIR="$(dirname "$(dirname "$DIRECT_PROJECT")")"
+
+            echo ""
+            echo "Project root:"
+            echo "$PROJECT_DIR"
+
+            ditto "$PROJECT_DIR" "$SOURCE_DIR"
+
+
+          else
+
+            echo ""
+            echo "No unpacked project found."
+            echo "Searching ZIP files..."
+
+
+            SOURCE_ZIP="$(python3 - <<'PY'
+
+          import os
+          import zipfile
+
+          root = os.environ["GITHUB_WORKSPACE"]
+
+          candidates = []
+
+          for base, dirs, files in os.walk(root):
+
+              dirs[:] = [
+                  directory
+                  for directory in dirs
+                  if directory not in {
+                      ".git",
+                      "__MACOSX",
+                      "source",
+                      "build",
+                      "output",
+                  }
+              ]
+
+              for filename in files:
+
+                  if not filename.lower().endswith(".zip"):
+                      continue
+
+                  path = os.path.join(base, filename)
+
+                  try:
+
+                      with zipfile.ZipFile(path) as archive:
+
+                          names = [
+                              name
+                              for name in archive.namelist()
+                              if not name.startswith("__MACOSX/")
+                          ]
+
+                          contains_project = any(
+                              name.endswith(
+                                  "ThreeOneOSFive.xcodeproj/project.pbxproj"
+                              )
+                              for name in names
+                          )
+
+                          if contains_project:
+                              candidates.append(path)
+
+                  except zipfile.BadZipFile:
+                      pass
+
+
+          if not candidates:
+
+              raise SystemExit(
+                  "No ZIP containing "
+                  "ThreeOneOSFive.xcodeproj/project.pbxproj "
+                  "was found."
+              )
+
+
+          candidates.sort(
+              key=lambda path: (
+                  os.path.getmtime(path),
+                  os.path.getsize(path),
+              ),
+              reverse=True,
+          )
+
+
+          print(candidates[0])
+
+          PY
+          )"
+
+
+            echo ""
+            echo "Using source ZIP:"
+            echo "$SOURCE_ZIP"
+
+
+            TEMP_EXTRACT="$RUNNER_TEMP/external-source"
+
+            rm -rf "$TEMP_EXTRACT"
+
+            mkdir -p "$TEMP_EXTRACT"
+
+
+            echo ""
+            echo "Extracting..."
+
+            ditto -x -k "$SOURCE_ZIP" "$TEMP_EXTRACT"
+
+
+            echo ""
+            echo "Locating project after extraction..."
+
+            PBXPROJ="$(find "$TEMP_EXTRACT" \
+              -path '*/__MACOSX/*' -prune -o \
+              -name project.pbxproj \
+              -path '*/ThreeOneOSFive.xcodeproj/project.pbxproj' \
+              -print -quit)"
+
+
+            if [[ -z "$PBXPROJ" ]]; then
+
+              echo ""
+              echo "ERROR:"
+              echo "project.pbxproj was not found after extraction."
+
+              find "$TEMP_EXTRACT" -maxdepth 5 -print
+
+              exit 1
+
+            fi
+
+
+            PROJECT_DIR="$(dirname "$(dirname "$PBXPROJ")")"
+
+
+            echo ""
+            echo "Extracted project root:"
+            echo "$PROJECT_DIR"
+
+
+            ditto "$PROJECT_DIR" "$SOURCE_DIR"
+
           fi
 
-          XCODEPROJ="$(dirname "$PROJECT_FILE")"
 
-          # A source ZIP may have an extra top-level directory.
-          # Find the repository root by locating the directories
-          # that belong beside the Xcode project.
-          PROJECT_ROOT="$(dirname "$XCODEPROJ")"
+          PROJECT="$SOURCE_DIR/ThreeOneOSFive.xcodeproj"
 
-          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive" ]; then
-            PROJECT_ROOT="$(
-              find "$GITHUB_WORKSPACE/source" \
-                -type d \
-                -name 'ThreeOneOSFive' \
-                -print \
-                | head -n 1 \
-                | xargs dirname
-            )"
-          fi
+          PBXPROJ="$PROJECT/project.pbxproj"
 
-          if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
-            echo "::error::Could not determine source root."
-            exit 1
-          fi
+          INFO_PLIST="$SOURCE_DIR/ThreeOneOSFive/Info.plist"
 
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-          echo "XCODEPROJ=$XCODEPROJ" >> "$GITHUB_ENV"
+          AUTH_DYLIB="$SOURCE_DIR/ThreeOneOSFive/Auth/ExternalAuth.dylib"
+
 
           echo ""
           echo "========================================"
-          echo "PROJECT FOUND"
-          echo "========================================"
-          echo "Root:"
-          echo "$PROJECT_ROOT"
-          echo ""
-          echo "Xcode project:"
-          echo "$XCODEPROJ"
-
-      - name: Validate source structure
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "VALIDATING SOURCE"
+          echo "VALIDATING REQUIRED FILES"
           echo "========================================"
 
-          test -d "$XCODEPROJ"
-          test -f "$XCODEPROJ/project.pbxproj"
 
-          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive" ]; then
-            echo "::error::ThreeOneOSFive directory not found."
+          if [[ ! -f "$PBXPROJ" ]]; then
+
+            echo "ERROR: Missing:"
+            echo "$PBXPROJ"
+
             exit 1
+
           fi
 
-          if [ ! -d "$PROJECT_ROOT/tools" ]; then
-            echo "::error::tools directory not found."
+
+          if [[ ! -f "$INFO_PLIST" ]]; then
+
+            echo "ERROR: Missing:"
+            echo "$INFO_PLIST"
+
             exit 1
+
           fi
 
-          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive/Patches" ]; then
-            echo "::error::ThreeOneOSFive/Patches not found."
+
+          if [[ ! -f "$AUTH_DYLIB" ]]; then
+
+            echo "ERROR: Missing:"
+            echo "$AUTH_DYLIB"
+
             exit 1
+
           fi
 
-          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive/Generated" ]; then
-            echo "::error::ThreeOneOSFive/Generated not found."
-            exit 1
-          fi
 
           echo ""
-          echo "ThreeOneOSFive: OK"
-          echo "tools: OK"
-          echo "Patches: OK"
-          echo "Generated: OK"
+          echo "All required files found."
 
-      - name: Show patch resources
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          PATCH_DIR="$PROJECT_ROOT/ThreeOneOSFive/Patches"
-          GENERATED_DIR="$PROJECT_ROOT/ThreeOneOSFive/Generated"
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
-          echo "========================================"
-          echo "PATCH RESOURCES"
-          echo "========================================"
+          echo "PBXPROJ=$PBXPROJ" >> "$GITHUB_ENV"
+
+          echo "INFO_PLIST=$INFO_PLIST" >> "$GITHUB_ENV"
+
 
           echo ""
-          echo "Patches:"
+          echo "Prepared source files:"
 
-          find "$PATCH_DIR" \
-            -maxdepth 1 \
+          find "$SOURCE_DIR" \
+            -maxdepth 2 \
             -type f \
-            -print \
-            | sort || true
+            | sort \
+            | head -100
 
-          echo ""
-          echo ".3105 files:"
-
-          find "$PATCH_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.3105' \
-            -print \
-            | sort || true
-
-          echo ""
-          echo "Generated:"
-
-          find "$GENERATED_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -print \
-            | sort || true
 
       - name: Validate Xcode project
         shell: bash
+
         run: |
+
           set -euo pipefail
 
+          echo "========================================"
+          echo "PROJECT VALIDATION"
+          echo "========================================"
+
+          plutil -lint "$PBXPROJ"
+
+
+          echo ""
+          echo "Available targets/configurations:"
+
           xcodebuild \
-            -project "$XCODEPROJ" \
+            -project "$PROJECT" \
             -list
 
-      - name: Prepare build directory
+
+      - name: Validate ExternalAuth
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          rm -rf "$GITHUB_WORKSPACE/build"
+          AUTH_DYLIB="$SOURCE_DIR/ThreeOneOSFive/Auth/ExternalAuth.dylib"
 
-          mkdir -p \
-            "$GITHUB_WORKSPACE/build/DerivedData"
 
-      - name: Clean build
+          echo "========================================"
+          echo "EXTERNAL AUTH VALIDATION"
+          echo "========================================"
+
+
+          file "$AUTH_DYLIB"
+
+
+          if ! file "$AUTH_DYLIB" | grep -q "arm64"; then
+
+            echo ""
+            echo "ERROR:"
+            echo "ExternalAuth.dylib is not arm64."
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "ExternalAuth SHA-256:"
+
+          shasum -a 256 "$AUTH_DYLIB"
+
+
+      - name: Inject Remote Config URL
+        if: ${{ env.EXTERNAL_REMOTE_CONFIG_URL != '' }}
+
         shell: bash
+
         run: |
+
           set -euo pipefail
+
+
+          echo "========================================"
+          echo "REMOTE CONFIG URL"
+          echo "========================================"
+
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :ExternalRemoteConfigURL $EXTERNAL_REMOTE_CONFIG_URL" \
+            "$INFO_PLIST" \
+          || \
+          /usr/libexec/PlistBuddy \
+            -c "Add :ExternalRemoteConfigURL string $EXTERNAL_REMOTE_CONFIG_URL" \
+            "$INFO_PLIST"
+
+
+          echo ""
+          echo "Injected URL:"
+
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :ExternalRemoteConfigURL" \
+            "$INFO_PLIST"
+
+
+      - name: Show final build configuration
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+
+          echo "========================================"
+          echo "BUILD SETTINGS"
+          echo "========================================"
+
 
           xcodebuild \
-            -project "$XCODEPROJ" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            -project "$PROJECT" \
+            -target "$TARGET_NAME" \
+            -configuration "$CONFIGURATION" \
+            -sdk "$SDK" \
+            -showBuildSettings \
+            | grep -E \
+              "PRODUCT_NAME|PRODUCT_BUNDLE_IDENTIFIER|IPHONEOS_DEPLOYMENT_TARGET|SDKROOT|ARCHS|SWIFT_VERSION" \
+            || true
+
+
+      - name: Build EXTERNAL
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+
+          echo "========================================"
+          echo "BUILDING EXTERNAL"
+          echo "========================================"
+
+
+          cd "$SOURCE_DIR"
+
+
+          set +e
+
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -target "$TARGET_NAME" \
+            -configuration "$CONFIGURATION" \
+            -sdk "$SDK" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean
-
-      - name: Build 3105 External UI
-        shell: bash
-        run: |
-          set -o pipefail
-
-          LOG="$GITHUB_WORKSPACE/xcodebuild.log"
-
-          echo "========================================"
-          echo "BUILDING 3105 EXTERNAL UI"
-          echo "========================================"
-
-          xcodebuild \
-            -project "$XCODEPROJ" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            ONLY_ACTIVE_ARCH=NO \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_BITCODE=NO \
+            SYMROOT="$BUILD_DIR" \
+            OBJROOT="$BUILD_DIR/obj" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build \
-            2>&1 | tee "$LOG"
+            2>&1 \
+            | tee "$OUTPUT_DIR/xcodebuild.log"
 
-          RC=${PIPESTATUS[0]}
 
-          if [ "$RC" -ne 0 ]; then
+          STATUS=${PIPESTATUS[0]}
+
+
+          set -e
+
+
+          echo ""
+          echo "xcodebuild exit code:"
+          echo "$STATUS"
+
+
+          if [[ "$STATUS" -ne 0 ]]; then
 
             echo ""
             echo "========================================"
             echo "BUILD FAILED"
             echo "========================================"
 
-            echo ""
-            echo "Relevant errors:"
+            exit "$STATUS"
 
-            grep -n -E \
-              'error:|fatal error:|BUILD FAILED|SwiftCompile|CompileSwift|Ld ' \
-              "$LOG" \
-              | tail -n 300 || true
-
-            echo ""
-            echo "Last 150 lines:"
-
-            tail -n 150 "$LOG" || true
-
-            exit "$RC"
           fi
+
 
           echo ""
           echo "========================================"
-          echo "BUILD SUCCESS"
+          echo "BUILD SUCCEEDED"
           echo "========================================"
+
 
       - name: Locate built application
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          APP="$(find "$GITHUB_WORKSPACE/build/DerivedData" \
-            -type d \
-            -name '*.app' \
-            -path '*/Build/Products/Release-iphoneos/*' \
-            -print \
-            | head -n 1)"
 
-          if [ -z "$APP" ]; then
-            echo "::error::No Release-iphoneos .app was produced."
+          echo "========================================"
+          echo "LOCATING 3105.APP"
+          echo "========================================"
+
+
+          APP_PATH="$(find "$BUILD_DIR" \
+            -type d \
+            -name '3105.app' \
+            -path '*Release-iphoneos*' \
+            -print \
+            -quit)"
+
+
+          if [[ -z "$APP_PATH" ]]; then
+
+            APP_PATH="$(find "$BUILD_DIR" \
+              -type d \
+              -name '3105.app' \
+              -print \
+              -quit)"
+
+          fi
+
+
+          if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
 
             echo ""
-            echo "Available .app files:"
+            echo "ERROR:"
+            echo "3105.app was not generated."
 
-            find "$GITHUB_WORKSPACE/build/DerivedData" \
-              -type d \
-              -name '*.app' \
-              -print || true
+            echo ""
+            echo "Build directory contents:"
+
+            find "$BUILD_DIR" \
+              -maxdepth 6 \
+              -print \
+              || true
 
             exit 1
+
           fi
 
-          echo "APP=$APP" >> "$GITHUB_ENV"
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
 
           echo ""
-          echo "Application:"
-          echo "$APP"
+          echo "Built application:"
 
-      - name: Validate application
+          echo "$APP_PATH"
+
+
+          echo ""
+          echo "Size:"
+
+          du -sh "$APP_PATH"
+
+
+      - name: Validate built application
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          test -d "$APP"
-          test -f "$APP/Info.plist"
 
-          BUNDLE_ID="$(
-            /usr/libexec/PlistBuddy \
-              -c 'Print :CFBundleIdentifier' \
-              "$APP/Info.plist"
-          )"
+          echo "========================================"
+          echo "VALIDATING BUILT APP"
+          echo "========================================"
 
-          EXECUTABLE_NAME="$(
-            /usr/libexec/PlistBuddy \
-              -c 'Print :CFBundleExecutable' \
-              "$APP/Info.plist"
-          )"
 
-          echo "Bundle ID:"
-          echo "$BUNDLE_ID"
+          APP_EXECUTABLE="$APP_PATH/3105"
 
-          echo ""
-          echo "Executable:"
-          echo "$EXECUTABLE_NAME"
+          AUTH_DYLIB="$APP_PATH/Frameworks/ExternalAuth.dylib"
 
-          EXECUTABLE="$APP/$EXECUTABLE_NAME"
 
-          if [ ! -f "$EXECUTABLE" ]; then
-            echo "::error::Executable not found:"
-            echo "$EXECUTABLE"
+          if [[ ! -f "$APP_EXECUTABLE" ]]; then
+
+            echo "ERROR:"
+            echo "Main executable not found."
+
             exit 1
+
           fi
 
-          file "$EXECUTABLE"
+
+          if [[ ! -f "$APP_PATH/Info.plist" ]]; then
+
+            echo "ERROR:"
+            echo "Built Info.plist not found."
+
+            exit 1
+
+          fi
+
+
+          if [[ ! -f "$AUTH_DYLIB" ]]; then
+
+            echo "ERROR:"
+            echo "ExternalAuth.dylib was not embedded."
+
+            exit 1
+
+          fi
+
 
           echo ""
-          echo "Architecture:"
-          lipo -info "$EXECUTABLE" || true
+          echo "Info.plist validation:"
 
-      - name: Package IPA
+          plutil -lint "$APP_PATH/Info.plist"
+
+
+          echo ""
+          echo "Main executable:"
+
+          file "$APP_EXECUTABLE"
+
+
+          echo ""
+          echo "ExternalAuth:"
+
+          file "$AUTH_DYLIB"
+
+
+          echo ""
+          echo "Main executable dependencies:"
+
+          otool -L "$APP_EXECUTABLE"
+
+
+          if ! otool -L "$APP_EXECUTABLE" \
+            | grep -q "ExternalAuth.dylib"; then
+
+            echo ""
+            echo "ERROR:"
+            echo "3105 executable is not linked to ExternalAuth.dylib."
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "Bundle Identifier:"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP_PATH/Info.plist"
+
+
+          echo ""
+          echo "Display Name:"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleDisplayName" \
+            "$APP_PATH/Info.plist"
+
+
+          echo ""
+          echo "Minimum OS:"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :MinimumOSVersion" \
+            "$APP_PATH/Info.plist" \
+            || true
+
+
+          echo ""
+          echo "Remote Config URL:"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :ExternalRemoteConfigURL" \
+            "$APP_PATH/Info.plist" \
+            || true
+
+
+      - name: Package unsigned IPA
         shell: bash
+
         run: |
+
           set -euo pipefail
 
-          IPA_NAME="3105-1.0.1-EXTERNAL-UI.ipa"
 
           echo "========================================"
           echo "PACKAGING IPA"
           echo "========================================"
 
-          rm -rf "$GITHUB_WORKSPACE/Payload"
 
-          mkdir -p "$GITHUB_WORKSPACE/Payload"
+          PACKAGE_ROOT="$RUNNER_TEMP/ipa-root"
 
-          cp -R \
-            "$APP" \
-            "$GITHUB_WORKSPACE/Payload/"
 
-          cd "$GITHUB_WORKSPACE"
+          rm -rf "$PACKAGE_ROOT"
 
-          rm -f "$IPA_NAME"
 
-          /usr/bin/zip \
-            -qry \
-            "$IPA_NAME" \
-            Payload
+          mkdir -p "$PACKAGE_ROOT/Payload"
 
-          if [ ! -s "$IPA_NAME" ]; then
-            echo "::error::IPA was not created."
-            exit 1
-          fi
 
           echo ""
-          echo "IPA successfully created:"
-          ls -lh "$IPA_NAME"
+          echo "Copying application..."
+
+
+          ditto \
+            "$APP_PATH" \
+            "$PACKAGE_ROOT/Payload/3105.app"
+
+
+          echo ""
+          echo "Removing stale signatures..."
+
+
+          codesign \
+            --remove-signature \
+            "$PACKAGE_ROOT/Payload/3105.app/Frameworks/ExternalAuth.dylib" \
+            2>/dev/null \
+            || true
+
+
+          codesign \
+            --remove-signature \
+            "$PACKAGE_ROOT/Payload/3105.app" \
+            2>/dev/null \
+            || true
+
+
+          rm -rf \
+            "$PACKAGE_ROOT/Payload/3105.app/_CodeSignature"
+
+
+          rm -f \
+            "$PACKAGE_ROOT/Payload/3105.app/embedded.mobileprovision"
+
+
+          echo ""
+          echo "Creating unsigned IPA..."
+
+
+          cd "$PACKAGE_ROOT"
+
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            "$OUTPUT_DIR/$IPA_NAME"
+
+
+          if [[ ! -s "$OUTPUT_DIR/$IPA_NAME" ]]; then
+
+            echo ""
+            echo "ERROR:"
+            echo "IPA was not created."
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "Generated IPA:"
+
+          ls -lh "$OUTPUT_DIR/$IPA_NAME"
+
+
+      - name: Validate IPA
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+
+          echo "========================================"
+          echo "IPA VALIDATION"
+          echo "========================================"
+
+
+          IPA="$OUTPUT_DIR/$IPA_NAME"
+
+
+          test -s "$IPA"
+
+
+          echo ""
+          echo "IPA contents:"
+
+          unzip -l "$IPA" \
+            | head -80
+
+
+          echo ""
+          echo "Checking required application files..."
+
+
+          if ! unzip -l "$IPA" \
+            | grep -q "Payload/3105.app/3105"; then
+
+            echo ""
+            echo "ERROR:"
+            echo "Main executable missing from IPA."
+
+            exit 1
+
+          fi
+
+
+          if ! unzip -l "$IPA" \
+            | grep -q "Payload/3105.app/Frameworks/ExternalAuth.dylib"; then
+
+            echo ""
+            echo "ERROR:"
+            echo "ExternalAuth.dylib missing from IPA."
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "IPA SHA-256:"
+
+          shasum -a 256 "$IPA"
+
+
+      - name: Generate build metadata
+        if: always()
+
+        shell: bash
+
+        run: |
+
+          set -uo pipefail
+
+
+          mkdir -p "$OUTPUT_DIR"
+
+
+          {
+
+            echo "workflow=$GITHUB_WORKFLOW"
+
+            echo "run_id=$GITHUB_RUN_ID"
+
+            echo "run_number=$GITHUB_RUN_NUMBER"
+
+            echo "commit=$GITHUB_SHA"
+
+            echo "ref=$GITHUB_REF"
+
+            echo "runner=$(sw_vers -productVersion 2>/dev/null || true)"
+
+            echo "xcode=$(xcodebuild -version 2>/dev/null | tr '\n' ' ' || true)"
+
+
+            if [[ -n "${APP_PATH:-}" ]] \
+              && [[ -f "${APP_PATH}/3105" ]]; then
+
+              echo "binary=$(file "${APP_PATH}/3105")"
+
+            fi
+
+
+            if [[ -f "$OUTPUT_DIR/$IPA_NAME" ]]; then
+
+              echo "ipa_sha256=$(shasum -a 256 "$OUTPUT_DIR/$IPA_NAME" | awk '{print $1}')"
+
+            fi
+
+          } > "$OUTPUT_DIR/build-info.txt"
+
+
+          echo ""
+          echo "========================================"
+          echo "BUILD INFO"
+          echo "========================================"
+
+
+          cat "$OUTPUT_DIR/build-info.txt"
+
 
       - name: Upload IPA
+        if: success()
+
         uses: actions/upload-artifact@v4
+
         with:
-          name: 3105-1.0.1-EXTERNAL-UI
-          path: 3105-1.0.1-EXTERNAL-UI.ipa
+
+          name: 3105-2.0-EXTERNAL-REMOTE-IPA
+
+          path: ${{ env.OUTPUT_DIR }}/${{ env.IPA_NAME }}
+
           if-no-files-found: error
-          retention-days: 7
+
+          compression-level: 0
+
+          retention-days: 30
+
 
       - name: Upload build log
         if: always()
+
         uses: actions/upload-artifact@v4
+
         with:
-          name: 3105-1.0.1-EXTERNAL-UI-build-log
-          path: xcodebuild.log
-          if-no-files-found: ignore
-          retention-days: 7
+
+          name: 3105-2.0-EXTERNAL-REMOTE-build-log
+
+          path: |
+
+            ${{ env.OUTPUT_DIR }}/xcodebuild.log
+
+            ${{ env.OUTPUT_DIR }}/build-info.txt
+
+          if-no-files-found: warn
+
+          retention-days: 14

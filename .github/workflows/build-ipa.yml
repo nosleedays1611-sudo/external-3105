@@ -41,72 +41,102 @@ jobs:
             exit 1
           fi
 
-          echo "Using Xcode:"
-          echo "$XCODE_APP"
-
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
 
-          echo ""
-          echo "Developer directory:"
-          xcode-select -p
-
-          echo ""
+          echo "Xcode:"
           xcodebuild -version
 
+      - name: Extract 3105 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$GITHUB_WORKSPACE/3105-1.0.1-EXTERNAL-UI-source.zip"
+          SOURCE_DIR="$GITHUB_WORKSPACE/source"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Source ZIP not found:"
+            echo "$ZIP"
+            echo ""
+            echo "Files in repository:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
+            exit 1
+          fi
+
+          echo "Source ZIP:"
+          ls -lh "$ZIP"
+
+          rm -rf "$SOURCE_DIR"
+          mkdir -p "$SOURCE_DIR"
+
+          unzip -q "$ZIP" -d "$SOURCE_DIR"
+
           echo ""
-          xcodebuild -showsdks
+          echo "Extracted source:"
+          find "$SOURCE_DIR" \
+            -maxdepth 3 \
+            -print \
+            | sort \
+            | head -n 300
 
       - name: Locate ThreeOneOSFive project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for Xcode project..."
+          echo "Searching extracted source..."
 
-          PROJECT_FILE="$(find "$GITHUB_WORKSPACE" \
+          PROJECT_FILE="$(find "$GITHUB_WORKSPACE/source" \
             -type f \
             -path '*/ThreeOneOSFive.xcodeproj/project.pbxproj' \
             -print \
             -quit)"
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "::error::ThreeOneOSFive.xcodeproj/project.pbxproj not found."
+            echo "::error::ThreeOneOSFive.xcodeproj not found inside source ZIP."
 
             echo ""
-            echo "All Xcode projects found:"
-            find "$GITHUB_WORKSPACE" \
+            echo "Xcode projects found:"
+            find "$GITHUB_WORKSPACE/source" \
               -type d \
               -name '*.xcodeproj' \
               -print || true
 
             echo ""
-            echo "Repository root:"
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 2 \
+            echo "Source tree:"
+            find "$GITHUB_WORKSPACE/source" \
+              -maxdepth 5 \
               -print \
-              | sort || true
+              | sort \
+              | head -n 500
 
             exit 1
           fi
 
-          # project.pbxproj
-          #       ↓
-          # ThreeOneOSFive.xcodeproj
-          #       ↓
-          # repository root
-          PROJECT_ROOT="$(dirname "$(dirname "$PROJECT_FILE")")"
+          XCODEPROJ="$(dirname "$PROJECT_FILE")"
 
-          XCODEPROJ="$PROJECT_ROOT/ThreeOneOSFive.xcodeproj"
+          # A source ZIP may have an extra top-level directory.
+          # Find the repository root by locating the directories
+          # that belong beside the Xcode project.
+          PROJECT_ROOT="$(dirname "$XCODEPROJ")"
 
-          if [ ! -d "$XCODEPROJ" ]; then
-            echo "::error::Xcode project directory not found:"
-            echo "$XCODEPROJ"
-            exit 1
+          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive" ]; then
+            PROJECT_ROOT="$(
+              find "$GITHUB_WORKSPACE/source" \
+                -type d \
+                -name 'ThreeOneOSFive' \
+                -print \
+                | head -n 1 \
+                | xargs dirname
+            )"
           fi
 
-          if [ ! -f "$XCODEPROJ/project.pbxproj" ]; then
-            echo "::error::project.pbxproj not found:"
-            echo "$XCODEPROJ/project.pbxproj"
+          if [ -z "$PROJECT_ROOT" ] || [ ! -d "$PROJECT_ROOT" ]; then
+            echo "::error::Could not determine source root."
             exit 1
           fi
 
@@ -114,9 +144,11 @@ jobs:
           echo "XCODEPROJ=$XCODEPROJ" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Project root:"
+          echo "========================================"
+          echo "PROJECT FOUND"
+          echo "========================================"
+          echo "Root:"
           echo "$PROJECT_ROOT"
-
           echo ""
           echo "Xcode project:"
           echo "$XCODEPROJ"
@@ -127,101 +159,52 @@ jobs:
           set -euo pipefail
 
           echo "========================================"
-          echo "SOURCE STRUCTURE"
+          echo "VALIDATING SOURCE"
           echo "========================================"
 
           test -d "$XCODEPROJ"
           test -f "$XCODEPROJ/project.pbxproj"
 
-          echo ""
-          echo "Root contents:"
-          ls -la "$PROJECT_ROOT"
-
-          echo ""
-          echo "Checking ThreeOneOSFive..."
-
           if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive" ]; then
-            echo "::error::ThreeOneOSFive source directory not found."
+            echo "::error::ThreeOneOSFive directory not found."
             exit 1
           fi
-
-          echo "ThreeOneOSFive: OK"
-
-          echo ""
-          echo "Checking tools..."
 
           if [ ! -d "$PROJECT_ROOT/tools" ]; then
             echo "::error::tools directory not found."
             exit 1
           fi
 
-          echo "tools: OK"
-
-          echo ""
-          echo "Checking Patches..."
-
-          if [ -d "$PROJECT_ROOT/ThreeOneOSFive/Patches" ]; then
-            echo "Patches: OK"
-          else
+          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive/Patches" ]; then
             echo "::error::ThreeOneOSFive/Patches not found."
             exit 1
           fi
 
-          echo ""
-          echo "Checking Generated..."
-
-          if [ -d "$PROJECT_ROOT/ThreeOneOSFive/Generated" ]; then
-            echo "Generated: OK"
-          else
+          if [ ! -d "$PROJECT_ROOT/ThreeOneOSFive/Generated" ]; then
             echo "::error::ThreeOneOSFive/Generated not found."
             exit 1
           fi
 
           echo ""
-          echo "Checking patch vault..."
-
-          if [ -f "$PROJECT_ROOT/ThreeOneOSFive/Generated/patchvault.bin" ]; then
-            echo "patchvault.bin: OK"
-          else
-            echo "::warning::patchvault.bin not found."
-          fi
-
-          echo ""
-          echo "Checking resource vault..."
-
-          if [ -f "$PROJECT_ROOT/ThreeOneOSFive/Generated/resourcevault.bin" ]; then
-            echo "resourcevault.bin: OK"
-          else
-            echo "::warning::resourcevault.bin not found."
-          fi
-
-          echo ""
-          echo "Checking patch builder..."
-
-          if [ -f "$PROJECT_ROOT/tools/build_patch_vault.py" ]; then
-            echo "build_patch_vault.py: OK"
-          else
-            echo "::warning::build_patch_vault.py not found."
-          fi
+          echo "ThreeOneOSFive: OK"
+          echo "tools: OK"
+          echo "Patches: OK"
+          echo "Generated: OK"
 
       - name: Show patch resources
         shell: bash
         run: |
           set -euo pipefail
 
+          PATCH_DIR="$PROJECT_ROOT/ThreeOneOSFive/Patches"
+          GENERATED_DIR="$PROJECT_ROOT/ThreeOneOSFive/Generated"
+
           echo "========================================"
           echo "PATCH RESOURCES"
           echo "========================================"
 
-          PATCH_DIR="$PROJECT_ROOT/ThreeOneOSFive/Patches"
-          GENERATED_DIR="$PROJECT_ROOT/ThreeOneOSFive/Generated"
-
           echo ""
-          echo "Patches directory:"
-          echo "$PATCH_DIR"
-
-          echo ""
-          echo "Files in Patches:"
+          echo "Patches:"
 
           find "$PATCH_DIR" \
             -maxdepth 1 \
@@ -230,7 +213,7 @@ jobs:
             | sort || true
 
           echo ""
-          echo "3105 patch files:"
+          echo ".3105 files:"
 
           find "$PATCH_DIR" \
             -maxdepth 1 \
@@ -240,11 +223,7 @@ jobs:
             | sort || true
 
           echo ""
-          echo "Generated directory:"
-          echo "$GENERATED_DIR"
-
-          echo ""
-          echo "Generated files:"
+          echo "Generated:"
 
           find "$GENERATED_DIR" \
             -maxdepth 1 \
@@ -256,10 +235,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "XCODE PROJECT"
-          echo "========================================"
 
           xcodebuild \
             -project "$XCODEPROJ" \
@@ -298,7 +273,7 @@ jobs:
           LOG="$GITHUB_WORKSPACE/xcodebuild.log"
 
           echo "========================================"
-          echo "BUILD 3105 EXTERNAL UI"
+          echo "BUILDING 3105 EXTERNAL UI"
           echo "========================================"
 
           xcodebuild \
@@ -347,8 +322,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Searching for Release .app..."
 
           APP="$(find "$GITHUB_WORKSPACE/build/DerivedData" \
             -type d \
@@ -407,13 +380,11 @@ jobs:
           EXECUTABLE="$APP/$EXECUTABLE_NAME"
 
           if [ ! -f "$EXECUTABLE" ]; then
-            echo "::error::Application executable not found:"
+            echo "::error::Executable not found:"
             echo "$EXECUTABLE"
             exit 1
           fi
 
-          echo ""
-          echo "Executable:"
           file "$EXECUTABLE"
 
           echo ""
@@ -455,10 +426,7 @@ jobs:
 
           echo ""
           echo "IPA successfully created:"
-
           ls -lh "$IPA_NAME"
-
-          echo "IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
